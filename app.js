@@ -179,6 +179,30 @@ function focusHouse(h, withMe = true) {
   if (withMe && myPos && haversine(myPos, pts[0]) < 500) pts.push(myPos);
   focusPoints(pts, 18);
 }
+/* ---------- auto-follow ----------
+   The map keeps you (and, while delivering, the next house) on screen as you move.
+   If you drag or pinch the map yourself, following pauses for 15 s, or until you tap ◎ / Done. */
+let userMovedAt = 0;
+const FOLLOW_PAUSE_MS = 15000;
+$('#map').addEventListener('touchstart', () => { userMovedAt = Date.now(); }, { passive: true });
+$('#map').addEventListener('wheel', () => { userMovedAt = Date.now(); }, { passive: true });
+function resumeFollow() { userMovedAt = 0; }
+function onScreen(pt) {
+  const p = map.latLngToContainerPoint(pt), sz = map.getSize();
+  return p.x > 30 && p.x < sz.x - 80 && p.y > 80 && p.y < sz.y - sheetHeight() - 20;
+}
+function autoFollow() {
+  if (!myPos || tab === 'settings' || pickCtx || document.querySelector('.modal.show')) return;
+  if (Date.now() - userMovedAt < FOLLOW_PAUSE_MS) return;
+  const c = current(), p = prog();
+  if (tab === 'direction' && p.started && c && hasLoc(c) && haversine(myPos, [c.lat, c.lng]) < 400) {
+    const t = [c.lat, c.lng];
+    if (!onScreen(myPos) || !onScreen(t)) focusPoints([myPos, t], 17);
+  } else if (!onScreen(myPos)) {
+    map.panTo(myPos, { animate: true });
+  }
+}
+
 function fitAll() {
   const pts = mapHouses().filter(hasLoc).map(h => [h.lat, h.lng]);
   if (officePos()) pts.push(officePos());
@@ -198,7 +222,7 @@ function startGPS() {
     } else { meMarker.setLatLng(myPos); meAcc.setLatLng(myPos).setRadius(acc); }
     // When cycling, GPS also knows your direction of travel (used if the compass is unavailable)
     if (headingSrc !== 'compass' && pos.coords.heading != null && !isNaN(pos.coords.heading) && (pos.coords.speed || 0) > 1) { headingSrc = 'gps'; setHeading(pos.coords.heading); }
-    drawLine(); renderTop(); updateDistances();
+    drawLine(); renderTop(); updateDistances(); autoFollow();
   }, err => {
     if (err.code === 1) toast('Location permission denied. Allow it in iPhone Settings → Privacy → Location.', 4000);
   }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
@@ -377,7 +401,7 @@ function renderDirection() {
     body.querySelectorAll('.ncard').forEach(x => x.classList.remove('sel'));
     selectedId = wasSel ? null : id;
     if (!wasSel) el.classList.add('sel');
-    renderMarkers();
+    renderMarkers(); if (wasSel) resumeFollow(); else userMovedAt = Date.now();
     focusHouse(wasSel ? current() : findHouse(id), wasSel);
   });
   body.querySelectorAll('[data-done]').forEach(b => b.onclick = () => markDone(b.dataset.done));
@@ -456,7 +480,7 @@ function markDone(id) {
   if (!p.done.includes(id)) p.done.push(id);
   p.skipped = p.skipped.filter(x => x !== id);
   p.history.push({ t: 'done', id });
-  save(); selectedId = null;
+  save(); selectedId = null; resumeFollow();
   closeModal('info'); render(); focusHouse(current());
 }
 function undo() {
@@ -685,9 +709,10 @@ function renderSettings() {
       <b>Add houses:</b> stand at the door, tap <b>+</b> on the Direction map. Add them in delivery order.<br>
       <b>Deliver:</b> Direction → Start → Done at each house. Swipe the panel up to see the next houses, swipe the cards sideways, tap a card to show it on the map. ⋯ has Open in Maps, Edit and Pause.<br>
       <b>Office:</b> set it under Office; the route starts there and the 🏢 shows on the map.<br>
+      <b>Map follows you</b> automatically. Drag the map to look around; it follows again after 15 s or when you tap ◎.<br>
       <b>Compass:</b> the blue beam on your dot shows which way the phone faces. Allow Motion access when asked.<br>
       <b>On hold:</b> set stop dates in a house to hide it from the route (休止).</div></div>
-    <div class="muted" style="text-align:center">Newspaper Delivery v5</div>`;
+    <div class="muted" style="text-align:center">Newspaper Delivery v6</div>`;
   const pg = $('#settingsPage');
   pg.querySelectorAll('[data-active]').forEach(cb => cb.onchange = () => {
     const id = cb.dataset.active;
@@ -805,7 +830,7 @@ function render() {
 }
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => setTab(b.dataset.tab));
 $('#ovHandle').onclick = () => $('#ovSheet').classList.toggle('mini');
-$('#fabLocate').onclick = () => { startGPS(); enableCompass(); if (myPos) map.setView(myPos, Math.max(map.getZoom(), 18)); else toast('Finding you…'); };
+$('#fabLocate').onclick = () => { startGPS(); enableCompass(); resumeFollow(); if (myPos) map.setView(myPos, Math.max(map.getZoom(), 18)); else toast('Finding you…'); };
 $('#fabAdd').onclick = async () => {
   startGPS();
   // While delivering, insert right after the current house; otherwise at the end of the area.
@@ -822,6 +847,7 @@ fitApp(); setTimeout(fitApp, 300); setTimeout(fitApp, 1200);
 applyMapStyle();
 setTab('direction');
 fitAll();
-if (prog().started) { startGPS(); keepAwake(); }
+startGPS();
+if (prog().started) keepAwake();
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
