@@ -100,19 +100,8 @@ let lineToTarget = null, meMarker = null, meAcc = null;
 let myPos = null, watchId = null, follow = false;
 let tab = 'direction', selectedId = null, expanded = false;
 
-/* iOS home-screen apps sometimes report a viewport that is too short, leaving a
-   gap under the bottom bar. Size the app box to the real screen instead. */
-function fitApp() {
-  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
-  let h = window.innerHeight;
-  if (standalone) {
-    const portrait = window.innerWidth <= window.innerHeight;
-    const screenH = portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
-    h = Math.max(h, screenH);
-  }
-  document.documentElement.style.setProperty('--app-h', h + 'px');
-  map.invalidateSize();
-}
+/* Keep the map sized correctly after rotation, keyboard or returning to the app */
+function fitApp() { window.scrollTo(0, 0); map.invalidateSize(); }
 ['resize', 'orientationchange', 'pageshow'].forEach(ev => window.addEventListener(ev, () => setTimeout(fitApp, 50)));
 window.visualViewport?.addEventListener('resize', () => setTimeout(fitApp, 50));
 // after the keyboard closes, put the page back in place (iOS can leave it shifted)
@@ -617,7 +606,7 @@ function renderSettings() {
       <b>Add houses:</b> stand at the door, tap <b>+</b> on the Direction map. Add them in delivery order.<br>
       <b>Deliver:</b> Direction → Start → Done at each house. Swipe the panel up to see the next houses, swipe the cards sideways, tap a card to show it on the map. ⋯ has Open in Maps, Edit and Pause.<br>
       <b>On hold:</b> set stop dates in a house to hide it from the route (休止).</div></div>
-    <div class="muted" style="text-align:center">Newspaper Delivery v3</div>`;
+    <div class="muted" style="text-align:center">Newspaper Delivery v4</div>`;
   const pg = $('#settingsPage');
   pg.querySelectorAll('[data-active]').forEach(cb => cb.onchange = () => {
     const id = cb.dataset.active;

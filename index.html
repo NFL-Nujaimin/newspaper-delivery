@@ -20,15 +20,19 @@
   --tabs:58px; --safe-b:env(safe-area-inset-bottom,0px); --safe-t:env(safe-area-inset-top,0px);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;width:100%;overflow:hidden;position:fixed;inset:0;background:var(--bg);color:var(--text);
+html,body{margin:0;height:100%;width:100%;overflow:hidden;overscroll-behavior:none;background:var(--bg);color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN","Segoe UI",sans-serif;
-  overscroll-behavior:none;-webkit-user-select:none;user-select:none}
+  -webkit-user-select:none;user-select:none}
+/* iOS 26 home-screen apps (WebKit bug 301108) lay the page out one status-bar height too
+   short and leave the strip below unpainted. Making the document as tall as the screen
+   makes iOS use the full height. Only applies when opened from the home screen. */
+@media (display-mode: standalone){
+  html{min-height:min(100lvh, calc(100% + env(safe-area-inset-top, 0px)))}
+}
 input,textarea,select,button{font:inherit;color:inherit}
 input,textarea{-webkit-user-select:text;user-select:text}
 button{cursor:pointer;border:0;background:none}
-/* The whole app lives in one box sized to the real screen (see fitApp in app.js).
-   This avoids the iOS home-screen bug that leaves a gap under bottom bars. */
-#app{position:fixed;left:0;top:0;width:100%;height:var(--app-h,100%);overflow:hidden}
+#app{position:fixed;inset:0;overflow:hidden}
 /* No double-tap zoom or sideways dragging; only vertical scrolling inside panels */
 button,input,select,textarea,label,#tabs,#topbar,#fabs{touch-action:manipulation}
 .sheet,.page,.modal,.modal .box{touch-action:pan-y}
@@ -143,6 +147,9 @@ button,input,select,textarea,label,#tabs,#topbar,#fabs{touch-action:manipulation
 .row+.row{margin-top:8px}
 select,input[type=text],input[type=time],input[type=date],input[type=number],textarea{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:16px;width:100%}
 textarea{min-height:90px;resize:vertical}
+input[type=time],input[type=date]{-webkit-appearance:none;appearance:none;display:block;min-width:0;max-width:100%;min-height:44px;text-align:left}
+input[type=time]::-webkit-date-and-time-value,input[type=date]::-webkit-date-and-time-value{text-align:left}
+.row>input{min-width:0}
 label.f{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
 .hl{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line)}
 .hl:last-child{border-bottom:0}
