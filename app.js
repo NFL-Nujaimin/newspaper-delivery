@@ -1,15 +1,16 @@
-/* Paper Route — newspaper delivery helper (PWA). All data stays on this phone (localStorage). */
+/* Newspaper Delivery — delivery helper (PWA). All data stays on this phone (localStorage). */
 'use strict';
 
 const PAPERS = [
-  { key: 'kahoku',   short: 'K', label: 'Kahoku',   jp: 'かほく',   cls: 'k', color: '#22c55e' },
-  { key: 'mainichi', short: 'M', label: 'Mainichi', jp: '毎日',     cls: 'm', color: '#3b82f6' },
-  { key: 'seikyo',   short: 'S', label: 'Seikyo',   jp: 'せいきょう', cls: 's', color: '#a855f7' },
+  { key: 'kahoku',   label: 'Kahoku',   jp: 'かほく',     cls: 'k', color: '#22c55e' },
+  { key: 'mainichi', label: 'Mainichi', jp: '毎日',       cls: 'm', color: '#3b82f6' },
+  { key: 'seikyo',   label: 'Seikyo',   jp: 'せいきょう', cls: 's', color: '#a855f7' },
 ];
 const PLACE_CHIPS = ['Mailbox', 'Front-door post (玄関ポスト)', 'Push all the way in (落としこむ)', 'Door gap', 'Hand to person'];
-const LS_KEY = 'paperRoute.v1';
+const LS_KEY = 'paperRoute.v1'; // kept from the first version so existing data is preserved
 const DEFAULT_CENTER = [38.268, 140.87]; // Sendai
-const NEXT_COUNT = 12;
+const PEEK_COUNT = 8;   // houses in the slim "Next" row
+const LIST_COUNT = 40;  // houses in the swiped-up list
 
 /* ---------- helpers ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -35,25 +36,36 @@ function load() {
   return normalize({});
 }
 function normalize(d) {
-  d.areas ??= []; d.progress ??= {}; d.settings ??= {};
+  d.areas ??= []; d.settings ??= {};
   d.settings.darkMap ??= true; d.settings.wake ??= true;
-  if (!d.areas.length) { const a = { id: uid(), name: 'My area', houses: [] }; d.areas.push(a); d.currentAreaId = a.id; }
-  if (!d.areas.find(a => a.id === d.currentAreaId)) d.currentAreaId = d.areas[0].id;
+  if (!d.areas.length) { const a = { id: uid(), name: 'My area', houses: [] }; d.areas.push(a); d.activeAreaIds = [a.id]; }
+  const exists = id => d.areas.some(a => a.id === id);
+  if (!Array.isArray(d.activeAreaIds)) d.activeAreaIds = [exists(d.currentAreaId) ? d.currentAreaId : d.areas[0].id];
+  d.activeAreaIds = d.activeAreaIds.filter(exists);
+  if (!exists(d.editAreaId)) d.editAreaId = d.activeAreaIds[0] || d.areas[0].id;
+  delete d.currentAreaId;
+  if (!d.progress || !Array.isArray(d.progress.done)) d.progress = null; // old format → fresh
   return d;
 }
-function save() {
-  try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch (e) { toast('⚠️ Could not save!'); }
+function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch (e) { toast('⚠️ Could not save!'); } }
+
+const activeAreas = () => db.areas.filter(a => db.activeAreaIds.includes(a.id));
+const editArea = () => db.areas.find(a => a.id === db.editAreaId) || db.areas[0];
+const multi = () => activeAreas().length > 1;
+function where(id) {
+  for (const a of db.areas) { const i = a.houses.findIndex(h => h.id === id); if (i >= 0) return { a, i, h: a.houses[i] }; }
+  return null;
 }
-const area = () => db.areas.find(a => a.id === db.currentAreaId);
-const houseNo = h => area().houses.indexOf(h) + 1;
+const findHouse = id => where(id)?.h;
+const houseNo = h => (where(h.id)?.i ?? -1) + 1;
 const isStopped = (h, d = today()) => !!h.stopFrom && d >= h.stopFrom && (!h.stopTo || d <= h.stopTo);
 const hasLoc = h => typeof h.lat === 'number' && typeof h.lng === 'number';
+function newProgress() { return { date: today(), started: false, done: [], skipped: [], history: [] }; }
 function prog() {
-  const a = area(); let p = db.progress[a.id];
-  if (!p || p.date !== today()) { p = db.progress[a.id] = { date: today(), started: false, done: [], skipped: [], history: [] }; save(); }
-  return p;
+  if (!db.progress || db.progress.date !== today()) { db.progress = newProgress(); save(); }
+  return db.progress;
 }
-const route = () => area().houses.filter(h => !isStopped(h));
+const route = () => activeAreas().flatMap(a => a.houses.filter(h => !isStopped(h)));
 function statusOf(h) {
   const p = prog();
   if (isStopped(h)) return 'stopped';
@@ -61,18 +73,20 @@ function statusOf(h) {
   if (p.skipped.includes(h.id)) return 'skipped';
   return 'todo';
 }
-function current() { return route().find(h => statusOf(h) === 'todo') || null; }
-function upcoming() {
+const current = () => route().find(h => statusOf(h) === 'todo') || null;
+function upcoming(n) {
   const r = route(), c = current(); if (!c) return [];
-  return r.slice(r.indexOf(c) + 1).filter(h => statusOf(h) === 'todo').slice(0, NEXT_COUNT);
+  return r.slice(r.indexOf(c) + 1).filter(h => statusOf(h) === 'todo').slice(0, n);
 }
+const todoCount = () => route().filter(h => statusOf(h) === 'todo').length;
 function paperTotals(list) {
   const t = {}; PAPERS.forEach(p => (t[p.key] = 0));
   list.forEach(h => PAPERS.forEach(p => (t[p.key] += +(h.papers?.[p.key] || 0))));
   return t;
 }
+const paperCols = h => PAPERS.filter(p => +(h.papers?.[p.key] || 0) > 0).map(p => p.color);
 function pinBg(h) {
-  const cols = PAPERS.filter(p => +(h.papers?.[p.key] || 0) > 0).map(p => p.color);
+  const cols = paperCols(h);
   if (!cols.length) return '#64748b';
   if (cols.length === 1) return cols[0];
   const step = 360 / cols.length;
@@ -80,33 +94,36 @@ function pinBg(h) {
 }
 
 /* ---------- map ---------- */
-const map = L.map('map', { zoomControl: false, maxZoom: 20, tap: false }).setView(DEFAULT_CENTER, 14);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap',
-}).addTo(map);
+const map = L.map('map', { zoomControl: false, maxZoom: 20 }).setView(DEFAULT_CENTER, 14);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
 const markerLayer = L.layerGroup().addTo(map);
 let lineToTarget = null, meMarker = null, meAcc = null;
 let myPos = null, watchId = null, follow = false;
-let tab = 'direction', selectedId = null, sheetMini = false;
+let tab = 'direction', selectedId = null, expanded = false;
 
 function applyMapStyle() { document.body.classList.toggle('dark-tiles', !!db.settings.darkMap); }
 map.on('zoomend', () => $('#map').classList.toggle('show-labels', map.getZoom() >= 18));
 
+function mapHouses() {
+  const list = activeAreas().flatMap(a => a.houses);
+  if (ed) { const a = db.areas.find(x => x.id === ed._areaId); if (a && !db.activeAreaIds.includes(a.id)) list.push(...a.houses); }
+  return list;
+}
 function renderMarkers() {
   markerLayer.clearLayers();
-  const a = area(), cur = current();
-  a.houses.forEach((h, i) => {
+  const cur = current();
+  mapHouses().forEach(h => {
     if (!hasLoc(h)) return;
-    const st = statusOf(h);
+    const st = statusOf(h), n = houseNo(h);
     const isCur = cur && h.id === cur.id;
-    let size = st === 'done' ? 20 : isCur ? 40 : 28;
+    const size = st === 'done' ? 20 : isCur ? 40 : 28;
     const cls = ['pin', st, isCur ? 'current' : '', h.id === selectedId ? 'sel' : ''].join(' ');
     const icon = L.divIcon({
       className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
-      html: `<div class="${cls}" style="background:${pinBg(h)}">${st === 'done' ? '✓' : i + 1}</div>`,
+      html: `<div class="${cls}" style="background:${pinBg(h)}">${st === 'done' ? '✓' : n}</div>`,
     });
     const m = L.marker([h.lat, h.lng], { icon, zIndexOffset: isCur ? 1000 : h.id === selectedId ? 900 : st === 'done' ? -100 : 0 });
-    m.bindTooltip(esc(h.kanji || h.kana || `#${i + 1}`), { permanent: true, direction: 'top', offset: [0, -size / 2], className: 'lbl' });
+    m.bindTooltip(esc(h.kanji || h.kana || `#${n}`), { permanent: true, direction: 'top', offset: [0, -size / 2], className: 'lbl' });
     m.on('click', () => openInfo(h.id));
     m.addTo(markerLayer);
   });
@@ -126,9 +143,8 @@ function sheetHeight() {
 function focusPoints(points, minZoom = 17) {
   points = points.filter(Boolean);
   if (!points.length) return;
-  map.stop(); // cancel any running animation so the new focus wins
-  const b = L.latLngBounds(points);
-  map.fitBounds(b, {
+  map.stop();
+  map.fitBounds(L.latLngBounds(points), {
     paddingTopLeft: [40, 70], paddingBottomRight: [60, sheetHeight() + 30],
     maxZoom: points.length === 1 ? Math.max(minZoom, Math.min(19, map.getZoom())) : 19,
   });
@@ -140,7 +156,7 @@ function focusHouse(h, withMe = true) {
   focusPoints(pts, 18);
 }
 function fitAll() {
-  const pts = area().houses.filter(hasLoc).map(h => [h.lat, h.lng]);
+  const pts = mapHouses().filter(hasLoc).map(h => [h.lat, h.lng]);
   if (pts.length) focusPoints(pts, 10); else if (myPos) map.setView(myPos, 17);
 }
 
@@ -155,8 +171,7 @@ function startGPS() {
       meAcc = L.circle(myPos, { radius: acc, color: '#3b82f6', weight: 1, fillOpacity: .08, interactive: false }).addTo(map);
     } else { meMarker.setLatLng(myPos); meAcc.setLatLng(myPos).setRadius(acc); }
     if (follow) map.panTo(myPos, { animate: true });
-    drawLine(); renderTop();
-    if (tab === 'direction') updateDistances();
+    drawLine(); renderTop(); updateDistances();
   }, err => {
     if (err.code === 1) toast('Location permission denied. Allow it in iPhone Settings → Privacy → Location.', 4000);
   }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
@@ -164,7 +179,7 @@ function startGPS() {
 function getOnce() {
   return new Promise((res, rej) => {
     if (!navigator.geolocation) return rej(new Error('No GPS'));
-    navigator.geolocation.getCurrentPosition(p => res(p), rej, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   });
 }
 
@@ -174,14 +189,16 @@ async function keepAwake() {
   if (!db.settings.wake || !('wakeLock' in navigator) || !prog().started) return;
   try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
 }
+function releaseWake() { try { wakeLock?.release(); } catch (e) {} wakeLock = null; }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { keepAwake(); render(); } });
 
 /* ---------- top bar ---------- */
 function renderTop() {
   const t = $('#topInfo'), p = prog(), r = route();
+  if (tab === 'settings') { t.textContent = 'Settings'; return; }
+  const names = activeAreas().map(a => a.name).join(' + ') || 'No area';
   const done = r.filter(h => p.done.includes(h.id)).length;
-  if (tab === 'settings') { t.innerHTML = 'Settings'; return; }
-  let s = `<b>${esc(area().name)}</b> · ${done}/${r.length}`;
+  let s = `<b>${esc(names)}</b> · ${done}/${r.length}`;
   const c = current();
   if (tab === 'direction' && p.started && c) {
     s += ` · next #${houseNo(c)}`;
@@ -204,150 +221,217 @@ function badgesHTML(h) {
 }
 const noteHTML = h => h.note ? `<div class="note">${esc(h.note)}</div>` : '';
 const numHTML = h => `<div class="num" style="background:${pinBg(h)}">${houseNo(h)}</div>`;
-function distTo(h) { return myPos && hasLoc(h) ? haversine(myPos, [h.lat, h.lng]) : null; }
+const areaTag = h => multi() ? `<span class="atag">${esc(where(h.id)?.a.name)}</span>` : '';
+const distTo = h => myPos && hasLoc(h) ? haversine(myPos, [h.lat, h.lng]) : null;
 
 /* ---------- Direction ---------- */
+function setExpanded(v) {
+  if (expanded === v) return;
+  expanded = v;
+  renderDirection();
+  $('#dirBody').scrollTop = 0;
+}
 function renderDirection() {
   const body = $('#dirBody'), p = prog(), r = route(), c = current();
-  $('#dirSheet').classList.toggle('mini', sheetMini);
-  if (!area().houses.length) {
-    body.innerHTML = `<div class="empty">No houses in <b>${esc(area().name)}</b> yet.<br>
+  const sheet = $('#dirSheet');
+  sheet.classList.toggle('expanded', expanded && p.started && !!c);
+
+  if (!activeAreas().length) {
+    body.innerHTML = `<div class="empty">No area selected for today.<br>Pick your area(s) in Settings.</div>
+      <button class="btn big" id="goSettings">Choose area</button>`;
+    $('#goSettings').onclick = () => setTab('settings');
+    return;
+  }
+  if (!activeAreas().some(a => a.houses.length)) {
+    body.innerHTML = `<div class="empty">No houses in <b>${esc(activeAreas().map(a => a.name).join(' + '))}</b> yet.<br>
       Stand at a house and tap <b>+</b> to add it at your location,<br>or add houses in Settings.</div>
       <button class="btn big" id="demoBtn">Try with demo houses</button>`;
     $('#demoBtn').onclick = loadDemo;
     return;
   }
+
+  // Start page
   if (!p.started) {
     const t = paperTotals(r);
-    body.innerHTML = `<div style="font-size:20px;font-weight:800;margin:4px 0">${esc(area().name)}</div>
-      <div class="muted">${r.length} houses today${area().houses.length - r.length ? ` · ${area().houses.length - r.length} on hold` : ''}</div>
+    const midway = p.done.length > 0 && !!c;
+    const hold = activeAreas().reduce((s, a) => s + a.houses.length, 0) - r.length;
+    body.innerHTML = `<div style="font-size:20px;font-weight:800;margin:4px 0">${esc(activeAreas().map(a => a.name).join(' + '))}</div>
+      <div class="muted">${r.length} houses today${hold ? ` · ${hold} on hold` : ''}</div>
       <div class="badges">${PAPERS.map(pp => `<span class="b ${pp.cls}">${pp.label} ×${t[pp.key]}</span>`).join('')}</div>
-      ${p.done.length ? `<div class="muted" style="margin-top:8px">${p.done.length} already done today</div>` : ''}
-      <div class="actions"><button class="btn primary" id="startBtn">▶ ${p.done.length ? 'Continue' : 'Start'} delivery</button></div>`;
+      ${midway ? `<div class="muted" style="margin-top:8px">Paused: ${p.done.length} done, ${todoCount()} left</div>` : ''}
+      <div class="actions"><button class="btn primary" id="startBtn">▶ ${midway ? 'Continue' : 'Start'} delivery</button></div>
+      ${midway ? `<div class="actions"><button class="btn small" id="restartBtn" style="flex:1">Start over from house 1</button></div>` : ''}`;
     $('#startBtn').onclick = startDelivery;
+    if ($('#restartBtn')) $('#restartBtn').onclick = () => { if (confirm('Clear today\'s progress and start from the first house?')) { db.progress = newProgress(); save(); startDelivery(); } };
     return;
   }
+
+  // Finished
   if (!c) {
     const sk = r.filter(h => statusOf(h) === 'skipped');
     body.innerHTML = `<div class="empty" style="font-size:20px">🎉 All done!</div>
       ${sk.length ? `<div class="nexthead">Skipped — tap to deliver now</div>
-        ${sk.map(h => `<div class="hl" data-unskip="${h.id}">${numHTML(h)}<div class="t"><div><b>${esc(h.kanji)}</b> <span class="muted">${esc(h.kana)}</span></div></div><span>›</span></div>`).join('')}` : ''}
-      <div class="actions"><button class="btn" id="undoBtn">↶ Undo</button><button class="btn" id="finishBtn" style="flex:1">Finish</button></div>`;
+        ${sk.map(h => `<div class="hl" data-unskip="${h.id}">${numHTML(h)}<div class="t"><div><b>${esc(h.kanji)}</b> <span class="muted">${esc(h.kana)}</span>${areaTag(h)}</div></div><span>›</span></div>`).join('')}` : ''}
+      <div class="actions"><button class="btn" id="undoBtn">↶ Undo</button><button class="btn primary" id="finishBtn">Finish</button></div>`;
     body.querySelectorAll('[data-unskip]').forEach(el => el.onclick = () => {
-      const id = el.dataset.unskip; p.skipped = p.skipped.filter(x => x !== id); save(); render();
-      focusHouse(current());
+      p.skipped = p.skipped.filter(x => x !== el.dataset.unskip); save(); render(); focusHouse(current());
     });
     $('#undoBtn').onclick = undo;
-    $('#finishBtn').onclick = () => { p.started = false; save(); releaseWake(); render(); fitAll(); };
+    $('#finishBtn').onclick = finishDelivery;
     return;
   }
-  const next = upcoming(), d = distTo(c);
-  body.innerHTML = `
+
+  // Delivering
+  const left = todoCount() - 1;
+  const curHTML = `
     <div class="cur">${numHTML(c)}
-      <div style="flex:1;min-width:0"><div class="name">${esc(c.kanji || '(no name)')}</div><div class="kana">${esc(c.kana)}</div></div>
-      <div class="dist" id="curDist">${fmtDist(d)}</div>
+      <div style="flex:1;min-width:0"><div class="name">${esc(c.kanji || '(no name)')}${areaTag(c)}</div><div class="kana">${esc(c.kana)}</div></div>
+      <div class="dist" data-dist="${c.id}">${fmtDist(distTo(c))}</div>
     </div>
-    ${badgesHTML(c)}
-    <div class="hide-mini">${noteHTML(c)}</div>
+    ${badgesHTML(c)}${noteHTML(c)}
     <div class="actions">
       <button class="btn" id="undoBtn" ${p.history.length ? '' : 'disabled style="opacity:.4"'}>↶</button>
       <button class="btn" id="skipBtn">Skip</button>
       <button class="btn primary" id="doneBtn">✓ Done</button>
-    </div>
-    <div class="hide-mini">
-      <div class="nexthead">Up next (${route().filter(h => statusOf(h) === 'todo').length - 1} left)<span class="sp"></span>
-        <button class="btn small" id="notesToggle">${db.settings.showNotes ? 'Hide notes' : 'Show notes'}</button></div>
-      ${next.length ? `<div class="strip ${db.settings.showNotes ? 'notes' : ''}" id="strip">${next.map(h => `
-        <div class="card ${h.id === selectedId ? 'sel open' : ''}" data-id="${h.id}">
-          <div class="top">${numHTML(h)}<div style="flex:1;min-width:0"><div class="nm">${esc(h.kanji || '(no name)')}</div><div class="kn">${esc(h.kana)}</div></div>
-          <div class="dist" data-dist="${h.id}">${fmtDist(distTo(h))}</div></div>
-          ${badgesHTML(h)}
-          <div class="more">${noteHTML(h)}<div class="row" style="margin-top:8px"><button class="btn small" data-done="${h.id}">✓ Mark done</button><button class="btn small" data-edit="${h.id}">Edit</button></div></div>
-          <div class="hint">${h.note ? 'Tap to see notes · ' : ''}tap to show on map</div>
-        </div>`).join('')}</div>` : '<div class="muted">This is the last house.</div>'}
-      <div class="row" style="margin-top:10px">
+    </div>`;
+
+  if (!expanded) {
+    const next = upcoming(PEEK_COUNT);
+    const sel = next.find(h => h.id === selectedId);
+    body.innerHTML = curHTML + (next.length ? `
+      <div class="nexthead">Next${left > 0 ? ` · ${left} left` : ''}</div>
+      <div class="peek" id="peek">${next.map(h => `
+        <button class="pk ${h.id === selectedId ? 'sel' : ''}" data-id="${h.id}">${numHTML(h)}
+          <div style="min-width:0;text-align:left"><div class="nm">${esc(h.kanji || '(no name)')}</div>
+          <div class="d"><span class="dots">${paperCols(h).map(col => `<i style="background:${col}"></i>`).join('')}</span> <span data-dist="${h.id}">${fmtDist(distTo(h))}</span>${h.note ? ' · 📝' : ''}</div></div>
+        </button>`).join('')}</div>
+      ${sel ? `<div class="seldetail"><div style="font-weight:800">#${houseNo(sel)} ${esc(sel.kanji)} <span class="muted">${esc(sel.kana)}</span>${areaTag(sel)}</div>${badgesHTML(sel)}${noteHTML(sel)}</div>` : ''}
+      <button class="pullhint" id="pullHint">︿ Swipe up for all next houses</button>`
+      : '<div class="muted" style="margin-top:10px">This is the last house.</div>');
+    body.querySelectorAll('.pk').forEach(el => el.onclick = () => {
+      const id = el.dataset.id;
+      if (selectedId === id) { selectedId = null; render(); focusHouse(current()); return; }
+      selectedId = id; render(); focusHouse(findHouse(id), false);
+      const again = $(`.pk[data-id="${id}"]`); again?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    });
+    if ($('#pullHint')) $('#pullHint').onclick = () => setExpanded(true);
+  } else {
+    const list = upcoming(LIST_COUNT);
+    body.innerHTML = curHTML + `
+      <div class="nexthead">Next houses · ${left} left<span class="sp"></span><button class="btn small" id="collapseBtn">﹀ Back</button></div>
+      ${list.map(h => `<div class="nitem" data-id="${h.id}">
+        <div class="top">${numHTML(h)}<div style="flex:1;min-width:0"><div class="nm">${esc(h.kanji || '(no name)')}${areaTag(h)}</div><div class="kn">${esc(h.kana)}</div></div>
+        <div class="dist" data-dist="${h.id}">${fmtDist(distTo(h))}</div></div>
+        ${badgesHTML(h)}${noteHTML(h)}
+        <div class="row" style="margin-top:8px"><button class="btn small" data-show="${h.id}">Show on map</button><button class="btn small" data-done="${h.id}">✓ Mark done</button><button class="btn small" data-edit="${h.id}">Edit</button></div>
+      </div>`).join('')}
+      ${left > LIST_COUNT ? `<div class="muted" style="padding:10px 0">…and ${left - LIST_COUNT} more</div>` : ''}
+      <div class="row" style="margin-top:12px">
         <button class="btn small" id="navBtn">Open in Maps</button>
         <button class="btn small" id="editCurBtn">Edit this house</button>
-        <span class="sp" style="flex:1"></span>
+        <span style="flex:1"></span>
         <button class="btn small" id="pauseBtn">Pause</button>
-      </div>
-    </div>`;
+      </div>`;
+    $('#collapseBtn').onclick = () => setExpanded(false);
+    body.querySelectorAll('[data-show]').forEach(b => b.onclick = () => {
+      selectedId = b.dataset.show; expanded = false; render(); focusHouse(findHouse(selectedId), false);
+    });
+    body.querySelectorAll('[data-done]').forEach(b => b.onclick = () => markDone(b.dataset.done));
+    body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openEditor(b.dataset.edit));
+    $('#navBtn').onclick = () => { if (hasLoc(c)) location.href = `https://maps.apple.com/?daddr=${c.lat},${c.lng}&dirflg=w`; };
+    $('#editCurBtn').onclick = () => openEditor(c.id);
+    $('#pauseBtn').onclick = () => { p.started = false; expanded = false; save(); releaseWake(); render(); };
+  }
   $('#doneBtn').onclick = () => markDone(c.id);
-  $('#skipBtn').onclick = () => { p.skipped.push(c.id); p.history.push({ t: 'skip', id: c.id }); save(); selectedId = null; render(); focusHouse(current()); };
+  $('#skipBtn').onclick = () => {
+    p.skipped.push(c.id); p.history.push({ t: 'skip', id: c.id }); save();
+    selectedId = null; render(); focusHouse(current());
+  };
   $('#undoBtn').onclick = undo;
-  $('#notesToggle').onclick = () => { db.settings.showNotes = !db.settings.showNotes; save(); renderDirection(); };
-  $('#navBtn').onclick = () => { if (hasLoc(c)) location.href = `https://maps.apple.com/?daddr=${c.lat},${c.lng}&dirflg=w`; };
-  $('#editCurBtn').onclick = () => openEditor(c.id);
-  $('#pauseBtn').onclick = () => { p.started = false; save(); releaseWake(); render(); };
-  body.querySelectorAll('.card').forEach(el => el.onclick = e => {
-    if (e.target.closest('button')) return;
-    const id = el.dataset.id, h = area().houses.find(x => x.id === id);
-    const wasSel = selectedId === id;
-    body.querySelectorAll('.card').forEach(x => x.classList.remove('sel', 'open'));
-    selectedId = wasSel ? null : id;
-    if (!wasSel) { el.classList.add('sel', 'open'); focusHouse(h, false); }
-    renderMarkers();
-  });
-  body.querySelectorAll('[data-done]').forEach(b => b.onclick = () => markDone(b.dataset.done));
-  body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openEditor(b.dataset.edit));
 }
 function updateDistances() {
-  const c = current(); if (!c) return;
-  const cd = $('#curDist'); if (cd) cd.textContent = fmtDist(distTo(c));
   document.querySelectorAll('[data-dist]').forEach(el => {
-    const h = area().houses.find(x => x.id === el.dataset.dist); if (h) el.textContent = fmtDist(distTo(h));
+    const h = findHouse(el.dataset.dist); if (h) el.textContent = fmtDist(distTo(h));
   });
 }
+
+/* Swipe up / down on the direction panel */
+(function sheetGestures() {
+  const sheet = $('#dirSheet'), body = $('#dirBody');
+  let g = null;
+  sheet.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    g = { x: t.clientX, y: t.clientY, top: body.scrollTop, atBottom: body.scrollTop + body.clientHeight >= body.scrollHeight - 4 };
+  }, { passive: true });
+  sheet.addEventListener('touchend', e => {
+    if (!g) return;
+    const t = e.changedTouches[0], dx = t.clientX - g.x, dy = t.clientY - g.y, s = g; g = null;
+    if (Math.abs(dy) < 45 || Math.abs(dy) < Math.abs(dx) * 1.5) return; // ignore taps & sideways swipes
+    if (!prog().started || !current()) return;
+    if (dy < 0 && !expanded && s.atBottom) setExpanded(true);
+    else if (dy > 0 && expanded && s.top <= 0) setExpanded(false);
+  }, { passive: true });
+  $('#dirHandle').onclick = () => { if (prog().started && current()) setExpanded(!expanded); };
+})();
+
 function startDelivery() {
-  const p = prog(); p.started = true; save();
-  startGPS(); keepAwake(); sheetMini = false; selectedId = null;
+  let p = prog();
+  if (!current()) { db.progress = p = newProgress(); } // previous round finished → fresh start
+  p.started = true; save();
+  startGPS(); keepAwake(); expanded = false; selectedId = null;
   render(); focusHouse(current());
+}
+function finishDelivery() {
+  db.progress = newProgress(); save(); // back to the Start page
+  releaseWake(); expanded = false; selectedId = null;
+  render(); fitAll(); toast('Delivery finished 👍');
 }
 function markDone(id) {
   const p = prog();
   if (!p.done.includes(id)) p.done.push(id);
   p.skipped = p.skipped.filter(x => x !== id);
   p.history.push({ t: 'done', id });
-  save(); selectedId = null; closeModal('info');
-  render(); focusHouse(current());
+  save(); if (selectedId === id || !expanded) selectedId = null;
+  closeModal('info'); render(); if (!expanded) focusHouse(current());
 }
 function undo() {
   const p = prog(), last = p.history.pop(); if (!last) return;
   p.done = p.done.filter(x => x !== last.id); p.skipped = p.skipped.filter(x => x !== last.id);
   save(); render(); focusHouse(current()); toast('Undone');
 }
-function releaseWake() { try { wakeLock?.release(); } catch (e) {} wakeLock = null; }
 
 /* ---------- Overview ---------- */
 function renderOverview() {
-  const p = prog(), r = route(), all = area().houses;
+  const r = route();
   const done = r.filter(h => statusOf(h) === 'done').length;
   const skipped = r.filter(h => statusOf(h) === 'skipped').length;
+  const hold = activeAreas().reduce((s, a) => s + a.houses.length, 0) - r.length;
   const t = paperTotals(r), left = paperTotals(r.filter(h => statusOf(h) === 'todo'));
   const pct = r.length ? Math.round(done / r.length * 100) : 0;
-  $('#ovBody').innerHTML = `
-    <div class="row"><select id="ovArea">${db.areas.map(a => `<option value="${a.id}" ${a.id === db.currentAreaId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>
+  $('#ovBody').innerHTML = !activeAreas().length ? `<div class="empty">No area selected. Pick areas in Settings.</div>` : `
+    <div style="font-weight:800;font-size:18px">${esc(activeAreas().map(a => a.name).join(' + '))}</div>
     <div class="prog"><i style="width:${pct}%"></i></div>
     <div class="grid4">
       <div><b>${done}</b><span>Done</span></div>
       <div><b>${r.length - done - skipped}</b><span>Left</span></div>
       <div><b>${skipped}</b><span>Skipped</span></div>
-      <div><b>${all.length - r.length}</b><span>On hold</span></div>
+      <div><b>${hold}</b><span>On hold</span></div>
     </div>
+    ${multi() ? `<div style="margin-top:8px">${activeAreas().map(a => {
+      const ar = a.houses.filter(h => !isStopped(h)); const d = ar.filter(h => statusOf(h) === 'done').length;
+      return `<div class="muted">${esc(a.name)}: ${d} / ${ar.length}</div>`; }).join('')}</div>` : ''}
     <div class="nexthead">Papers today (left / total)</div>
     <div class="badges">${PAPERS.map(pp => `<span class="b ${pp.cls}">${pp.label} ${left[pp.key]} / ${t[pp.key]}</span>`).join('')}</div>
-    <div class="muted" style="margin-top:10px">Tap a pin for its notes. Grey ✓ = done, dashed orange = skipped, dashed grey = on hold.</div>
-    ${all.some(h => !hasLoc(h)) ? `<div class="muted" style="color:var(--warn);margin-top:6px">${all.filter(h => !hasLoc(h)).length} house(s) have no location yet (Settings).</div>` : ''}`;
-  $('#ovArea').onchange = e => { db.currentAreaId = e.target.value; save(); render(); fitAll(); };
+    <div class="muted" style="margin-top:10px">Tap a pin for its notes. Grey ✓ = done, dashed orange = skipped, dashed grey = on hold.</div>`;
 }
 
 /* ---------- House info (tap a pin) ---------- */
 function openInfo(id) {
-  const h = area().houses.find(x => x.id === id); if (!h) return;
+  const h = findHouse(id); if (!h) return;
   const st = statusOf(h);
   $('#infoBox').innerHTML = `
-    <div class="cur">${numHTML(h)}<div style="flex:1"><div class="name">${esc(h.kanji || '(no name)')}</div><div class="kana">${esc(h.kana)}</div></div>
-    <div class="dist">${fmtDist(distTo(h))}<br>${st === 'stopped' ? 'On hold' : st}</div></div>
+    <div class="cur">${numHTML(h)}<div style="flex:1"><div class="name">${esc(h.kanji || '(no name)')}${areaTag(h)}</div><div class="kana">${esc(h.kana)}</div></div>
+    <div class="dist">${fmtDist(distTo(h))}<br>${st === 'stopped' ? 'On hold' : st === 'todo' ? '' : st}</div></div>
     ${badgesHTML(h)}${noteHTML(h)}
     <div class="actions">
       <button class="btn" id="iClose">Close</button>
@@ -357,9 +441,7 @@ function openInfo(id) {
   $('#iClose').onclick = () => closeModal('info');
   $('#iEdit').onclick = () => { closeModal('info'); openEditor(id); };
   if ($('#iDone')) $('#iDone').onclick = () => markDone(id);
-  if ($('#iUndone')) $('#iUndone').onclick = () => {
-    const p = prog(); p.done = p.done.filter(x => x !== id); save(); closeModal('info'); render();
-  };
+  if ($('#iUndone')) $('#iUndone').onclick = () => { const p = prog(); p.done = p.done.filter(x => x !== id); save(); closeModal('info'); render(); };
   $('#info').classList.add('show');
 }
 function closeModal(name) { $('#' + name).classList.remove('show'); }
@@ -367,24 +449,36 @@ $('#info').addEventListener('click', e => { if (e.target.id === 'info') closeMod
 
 /* ---------- House editor ---------- */
 let ed = null; // working copy
+function defaultAddArea() {
+  const ea = editArea();
+  return db.activeAreaIds.includes(ea.id) ? ea : (activeAreas()[0] || ea);
+}
 function openEditor(id, opts = {}) {
-  const a = area();
-  const h = id ? a.houses.find(x => x.id === id) : null;
-  ed = h ? JSON.parse(JSON.stringify(h)) : {
-    id: uid(), kanji: '', kana: '', papers: { kahoku: 1, mainichi: 0, seikyo: 0 },
-    place: '', wrap: false, noFlyer: false, deadline: '', rooms: '', note: '', stopFrom: '', stopTo: '',
-    lat: opts.lat ?? null, lng: opts.lng ?? null,
-  };
-  ed._isNew = !h;
-  ed._pos = h ? a.houses.indexOf(h) + 1 : (opts.pos ?? a.houses.length + 1);
+  const w = id ? where(id) : null;
+  if (w) {
+    ed = JSON.parse(JSON.stringify(w.h)); ed._isNew = false; ed._areaId = w.a.id; ed._pos = w.i + 1;
+  } else {
+    const a = opts.areaId ? db.areas.find(x => x.id === opts.areaId) : defaultAddArea();
+    ed = {
+      id: uid(), kanji: '', kana: '', papers: { kahoku: 1, mainichi: 0, seikyo: 0 },
+      place: '', wrap: false, noFlyer: false, deadline: '', rooms: '', note: '', stopFrom: '', stopTo: '',
+      lat: opts.lat ?? null, lng: opts.lng ?? null,
+      _isNew: true, _areaId: a.id, _pos: opts.pos ?? a.houses.length + 1,
+    };
+  }
   renderEditor();
   $('#editor').classList.add('show');
 }
+function editorMaxPos() {
+  const a = db.areas.find(x => x.id === ed._areaId);
+  return a.houses.filter(h => h.id !== ed.id).length + 1;
+}
 function renderEditor() {
-  const a = area();
+  const max = editorMaxPos();
   $('#editorBox').innerHTML = `
     <h3>${ed._isNew ? 'Add house' : 'Edit house'}</h3>
-    <div class="muted">${esc(a.name)}</div>
+    <label class="f">Area</label>
+    <select id="eArea">${db.areas.map(a => `<option value="${a.id}" ${a.id === ed._areaId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
     <label class="f">Name (kanji)</label><input type="text" id="eKanji" value="${esc(ed.kanji)}" placeholder="佐藤">
     <label class="f">Reading (hiragana)</label><input type="text" id="eKana" value="${esc(ed.kana)}" placeholder="さとう">
     <label class="f">Newspapers</label>
@@ -403,8 +497,8 @@ function renderEditor() {
     <label class="f">Location</label>
     <div class="muted" id="eLoc">${hasLoc(ed) ? `Set (${ed.lat.toFixed(5)}, ${ed.lng.toFixed(5)})` : 'Not set'}</div>
     <div class="row" style="margin-top:6px"><button class="btn small" id="eGps">📍 Use my location</button><button class="btn small" id="ePick">🎯 Pick on map</button></div>
-    <label class="f">Position in route (1 – ${a.houses.length + (ed._isNew ? 1 : 0)})</label>
-    <input type="number" id="ePos" value="${ed._pos}" min="1" max="${a.houses.length + (ed._isNew ? 1 : 0)}" inputmode="numeric">
+    <label class="f">Position in route (1 – ${max})</label>
+    <input type="number" id="ePos" value="${Math.min(ed._pos, max)}" min="1" max="${max}" inputmode="numeric">
     <div class="actions">
       ${ed._isNew ? '' : '<button class="btn danger" id="eDel">Delete</button>'}
       <button class="btn" id="eCancel">Cancel</button>
@@ -414,6 +508,7 @@ function renderEditor() {
   box.querySelectorAll('[data-plus]').forEach(b => b.onclick = () => stepPaper(b.dataset.plus, 1));
   box.querySelectorAll('[data-minus]').forEach(b => b.onclick = () => stepPaper(b.dataset.minus, -1));
   box.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { $('#ePlace').value = b.dataset.chip; });
+  $('#eArea').onchange = e => { readEditor(); ed._areaId = e.target.value; ed._pos = editorMaxPos(); renderEditor(); };
   $('#eGps').onclick = async () => {
     $('#eLoc').textContent = 'Getting GPS…';
     try {
@@ -422,11 +517,12 @@ function renderEditor() {
     } catch (e) { $('#eLoc').textContent = 'Could not get GPS. Use "Pick on map".'; }
   };
   $('#ePick').onclick = () => { readEditor(); startPick(); };
-  $('#eCancel').onclick = () => { ed = null; closeModal('editor'); };
+  $('#eCancel').onclick = () => { ed = null; closeModal('editor'); render(); };
   $('#eSave').onclick = saveEditor;
   if ($('#eDel')) $('#eDel').onclick = () => {
     if (!confirm(`Delete ${ed.kanji || 'this house'}?`)) return;
-    a.houses = a.houses.filter(x => x.id !== ed.id); save(); ed = null; closeModal('editor'); render(); toast('Deleted');
+    db.areas.forEach(a => (a.houses = a.houses.filter(x => x.id !== ed.id)));
+    save(); ed = null; closeModal('editor'); render(); toast('Deleted');
   };
 }
 function stepPaper(k, d) {
@@ -443,8 +539,9 @@ function readEditor() {
 function saveEditor() {
   readEditor();
   if (!ed.kanji && !ed.kana) { toast('Please enter a name'); return; }
-  const a = area(), { _isNew, _pos, ...house } = ed;
-  a.houses = a.houses.filter(x => x.id !== house.id);
+  const { _isNew, _pos, _areaId, ...house } = ed;
+  db.areas.forEach(a => (a.houses = a.houses.filter(x => x.id !== house.id)));
+  const a = db.areas.find(x => x.id === _areaId);
   const idx = Math.max(0, Math.min(a.houses.length, _pos - 1));
   a.houses.splice(idx, 0, house);
   save(); ed = null; closeModal('editor'); render();
@@ -455,27 +552,37 @@ function saveEditor() {
 function startPick() {
   closeModal('editor');
   document.body.classList.add('picking');
+  renderMarkers();
   if (hasLoc(ed)) map.setView([ed.lat, ed.lng], Math.max(map.getZoom(), 18));
   else if (myPos) map.setView(myPos, 18);
 }
-$('#pickSet').onclick = () => {
-  const c = map.getCenter(); ed.lat = c.lat; ed.lng = c.lng;
-  document.body.classList.remove('picking'); renderEditor(); $('#editor').classList.add('show');
-};
-$('#pickCancel').onclick = () => { document.body.classList.remove('picking'); renderEditor(); $('#editor').classList.add('show'); };
+function endPick() { document.body.classList.remove('picking'); renderEditor(); $('#editor').classList.add('show'); }
+$('#pickSet').onclick = () => { const c = map.getCenter(); ed.lat = c.lat; ed.lng = c.lng; endPick(); };
+$('#pickCancel').onclick = endPick;
 
 /* ---------- Settings ---------- */
 function renderSettings() {
-  const a = area();
+  const ea = editArea();
   $('#settingsPage').innerHTML = `
     <h2>Settings</h2>
-    <div class="sec"><h3>Area</h3>
-      <div class="row"><select id="sArea">${db.areas.map(x => `<option value="${x.id}" ${x.id === a.id ? 'selected' : ''}>${esc(x.name)} (${x.houses.length})</option>`).join('')}</select></div>
-      <div class="row"><button class="btn small" id="sNewArea">+ New area</button><button class="btn small" id="sRename">Rename</button><button class="btn small danger" id="sDelArea">Delete area</button></div>
+    <div class="sec"><h3>Areas</h3>
+      <div class="muted" style="margin-bottom:6px">Tick the area(s) you deliver today. Ticked areas are delivered top to bottom. Tap a name to edit its houses.</div>
+      ${db.areas.map((a, i) => `
+        <div class="arow ${a.id === ea.id ? 'editing' : ''}">
+          <input type="checkbox" data-active="${a.id}" ${db.activeAreaIds.includes(a.id) ? 'checked' : ''}>
+          <div class="t" data-editarea="${a.id}"><b>${esc(a.name)}</b><div class="muted">${a.houses.length} houses${a.id === ea.id ? ' · editing below' : ' · tap to edit'}</div></div>
+          <div class="ar"><button data-aup="${i}">↑</button><button data-adown="${i}">↓</button></div>
+        </div>`).join('')}
+      <div class="row" style="margin-top:8px"><button class="btn small" id="sNewArea">+ New area</button></div>
     </div>
-    <div class="sec"><h3>Houses in route order</h3>
-      <div class="row" style="margin-bottom:6px"><button class="btn small" id="sAdd">+ Add house</button><span class="muted">Tap a house to edit. ↑↓ to reorder.</span></div>
-      ${a.houses.length ? a.houses.map((h, i) => `
+    <div class="sec"><h3>Houses in ${esc(ea.name)}</h3>
+      <div class="row" style="margin-bottom:6px">
+        <button class="btn small" id="sAdd">+ Add house</button>
+        <button class="btn small" id="sRename">Rename area</button>
+        <button class="btn small danger" id="sDelArea">Delete area</button>
+      </div>
+      <div class="muted" style="margin-bottom:4px">Tap a house to edit. ↑↓ to reorder.</div>
+      ${ea.houses.length ? ea.houses.map((h, i) => `
         <div class="hl" data-edit="${h.id}">${numHTML(h)}
           <div class="t"><div><b>${esc(h.kanji || '(no name)')}</b> <span class="muted">${esc(h.kana)}</span></div>
           <div class="muted">${[PAPERS.filter(p => +(h.papers?.[p.key] || 0)).map(p => p.label + '×' + h.papers[p.key]).join(' '), isStopped(h) ? '⏸ on hold' : '', hasLoc(h) ? '' : '⚠ no location', h.note ? '📝' : ''].filter(Boolean).join(' · ')}</div></div>
@@ -493,36 +600,51 @@ function renderSettings() {
     </div>
     <div class="sec"><h3>Help</h3><div class="muted" style="line-height:1.5">
       <b>Add houses:</b> stand at the door, tap <b>+</b> on the Direction map. Add them in delivery order.<br>
-      <b>Deliver:</b> Direction → Start → Done at each house. Tap a card in "Up next" to show it on the map.<br>
+      <b>Deliver:</b> Direction → Start → Done at each house. Tap a house in "Next" to show it on the map. Swipe the panel up to see all next houses.<br>
       <b>On hold:</b> set stop dates in a house to hide it from the route (休止).</div></div>
-    <div class="muted" style="text-align:center">Paper Route v1</div>`;
+    <div class="muted" style="text-align:center">Newspaper Delivery v2</div>`;
   const pg = $('#settingsPage');
-  $('#sArea').onchange = e => { db.currentAreaId = e.target.value; save(); renderSettings(); };
+  pg.querySelectorAll('[data-active]').forEach(cb => cb.onchange = () => {
+    const id = cb.dataset.active;
+    db.activeAreaIds = cb.checked ? [...db.activeAreaIds, id] : db.activeAreaIds.filter(x => x !== id);
+    save(); renderSettings(); renderTop();
+  });
+  pg.querySelectorAll('[data-editarea]').forEach(el => el.onclick = () => { db.editAreaId = el.dataset.editarea; save(); renderSettings(); });
+  pg.querySelectorAll('[data-aup],[data-adown]').forEach(b => b.onclick = () => {
+    const i = +(b.dataset.aup ?? b.dataset.adown), j = b.dataset.aup != null ? i - 1 : i + 1;
+    if (j < 0 || j >= db.areas.length) return;
+    [db.areas[i], db.areas[j]] = [db.areas[j], db.areas[i]]; save(); renderSettings();
+  });
   $('#sNewArea').onclick = () => {
-    const n = prompt('New area name', '23区'); if (!n) return;
-    const na = { id: uid(), name: n.trim(), houses: [] }; db.areas.push(na); db.currentAreaId = na.id; save(); renderSettings();
+    const n = prompt('New area name', ''); if (!n || !n.trim()) return;
+    const na = { id: uid(), name: n.trim(), houses: [] };
+    db.areas.push(na); db.editAreaId = na.id;
+    if (confirm(`Deliver "${na.name}" today?`)) db.activeAreaIds.push(na.id);
+    save(); renderSettings();
   };
-  $('#sRename').onclick = () => { const n = prompt('Area name', a.name); if (n) { a.name = n.trim(); save(); renderSettings(); } };
+  $('#sRename').onclick = () => { const n = prompt('Area name', ea.name); if (n && n.trim()) { ea.name = n.trim(); save(); renderSettings(); } };
   $('#sDelArea').onclick = () => {
-    if (!confirm(`Delete area "${a.name}" and its ${a.houses.length} houses?`)) return;
-    db.areas = db.areas.filter(x => x.id !== a.id); delete db.progress[a.id]; db = normalize(db); save(); renderSettings();
+    if (!confirm(`Delete area "${ea.name}" and its ${ea.houses.length} houses?`)) return;
+    db.areas = db.areas.filter(x => x.id !== ea.id);
+    db.activeAreaIds = db.activeAreaIds.filter(x => x !== ea.id);
+    db = normalize(db); save(); renderSettings();
   };
-  $('#sAdd').onclick = () => openEditor(null, { lat: myPos?.[0], lng: myPos?.[1] });
+  $('#sAdd').onclick = () => openEditor(null, { areaId: ea.id, lat: myPos?.[0], lng: myPos?.[1] });
   pg.querySelectorAll('.hl[data-edit]').forEach(el => el.onclick = e => { if (!e.target.closest('button')) openEditor(el.dataset.edit); });
   pg.querySelectorAll('[data-up],[data-down]').forEach(b => b.onclick = () => {
     const i = +(b.dataset.up ?? b.dataset.down), j = b.dataset.up != null ? i - 1 : i + 1;
-    if (j < 0 || j >= a.houses.length) return;
-    [a.houses[i], a.houses[j]] = [a.houses[j], a.houses[i]]; save(); renderSettings();
+    if (j < 0 || j >= ea.houses.length) return;
+    [ea.houses[i], ea.houses[j]] = [ea.houses[j], ea.houses[i]]; save(); renderSettings();
   });
-  $('#sReset').onclick = () => { if (confirm("Reset today's done/skipped marks?")) { delete db.progress[a.id]; save(); toast('Reset'); } };
+  $('#sReset').onclick = () => { if (confirm("Reset today's done/skipped marks?")) { db.progress = newProgress(); save(); toast('Reset'); } };
   $('#sWake').onchange = e => { db.settings.wake = e.target.checked; save(); };
   $('#sDark').onchange = e => { db.settings.darkMap = e.target.checked; save(); applyMapStyle(); };
   $('#sExport').onclick = exportData;
   $('#sImport').onclick = () => $('#importFile').click();
 }
 async function exportData() {
-  const data = JSON.stringify({ app: 'paper-route', version: 1, exported: new Date().toISOString(), areas: db.areas, settings: db.settings }, null, 2);
-  const name = `paper-route-backup-${today()}.json`;
+  const data = JSON.stringify({ app: 'newspaper-delivery', version: 2, exported: new Date().toISOString(), areas: db.areas, activeAreaIds: db.activeAreaIds, settings: db.settings }, null, 2);
+  const name = `newspaper-delivery-backup-${today()}.json`;
   const file = new File([data], name, { type: 'application/json' });
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
@@ -538,9 +660,11 @@ $('#importFile').onchange = async e => {
     if (!Array.isArray(d.areas)) throw new Error('bad file');
     const n = d.areas.reduce((s, a) => s + (a.houses?.length || 0), 0);
     if (!confirm(`Replace current data with backup (${d.areas.length} areas, ${n} houses)?`)) return;
-    db.areas = d.areas; if (d.settings) Object.assign(db.settings, d.settings);
-    db.progress = {}; db = normalize(db); save(); applyMapStyle(); render(); toast('Backup restored');
-  } catch (err) { toast('That file is not a Paper Route backup', 3000); }
+    db.areas = d.areas;
+    db.activeAreaIds = Array.isArray(d.activeAreaIds) ? d.activeAreaIds : d.areas.slice(0, 1).map(a => a.id);
+    if (d.settings) Object.assign(db.settings, d.settings);
+    db.progress = null; db = normalize(db); save(); applyMapStyle(); render(); toast('Backup restored');
+  } catch (err) { toast('That file is not a valid backup', 3000); }
 };
 
 /* ---------- Demo data ---------- */
@@ -560,7 +684,7 @@ function loadDemo() {
       lat: c[0] + (row === 0 ? 0.00035 : -0.00035), lng: c[1] - 0.001 + col * 0.0005 * (row === 0 ? 1 : -1) + (row ? 0.002 : 0),
     });
   });
-  db.areas.push(a); db.currentAreaId = a.id; save(); render(); fitAll();
+  db.areas.push(a); db.activeAreaIds = [a.id]; db.editAreaId = a.id; save(); render(); fitAll();
   toast('Demo area added — delete it later in Settings');
 }
 
@@ -585,7 +709,6 @@ function render() {
   renderMarkers(); renderTop();
 }
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => setTab(b.dataset.tab));
-$('#dirHandle').onclick = () => { sheetMini = !sheetMini; renderDirection(); };
 $('#ovHandle').onclick = () => $('#ovSheet').classList.toggle('mini');
 $('#fabLocate').onclick = () => { startGPS(); if (myPos) map.setView(myPos, Math.max(map.getZoom(), 18)); else toast('Finding you…'); };
 $('#fabFit').onclick = fitAll;
@@ -595,12 +718,13 @@ $('#fabFollow').onclick = () => {
 };
 $('#fabAdd').onclick = async () => {
   startGPS();
-  // Insert right after the current house while delivering, otherwise at the end.
+  // While delivering, insert right after the current house; otherwise at the end of the area.
   const c = current(), p = prog();
-  const pos = p.started && c ? houseNo(c) + 1 : area().houses.length + 1;
-  let lat = myPos?.[0], lng = myPos?.[1];
-  try { const g = await getOnce(); lat = g.coords.latitude; lng = g.coords.longitude; } catch (e) {}
-  openEditor(null, { lat, lng, pos });
+  const opts = {};
+  if (p.started && c) { const w = where(c.id); opts.areaId = w.a.id; opts.pos = w.i + 2; }
+  try { const g = await getOnce(); opts.lat = g.coords.latitude; opts.lng = g.coords.longitude; }
+  catch (e) { opts.lat = myPos?.[0]; opts.lng = myPos?.[1]; }
+  openEditor(null, opts);
 };
 
 /* ---------- boot ---------- */

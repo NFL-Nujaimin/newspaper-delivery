@@ -1,4 +1,4 @@
-# Paper Route
+# Newspaper Delivery
 
 A small web app for newspaper delivery. It runs in Safari and can be added to the iPhone home screen.
 

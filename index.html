@@ -6,9 +6,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Paper Route">
+<meta name="apple-mobile-web-app-title" content="Newspaper Delivery">
 <meta name="theme-color" content="#0b1220">
-<title>Paper Route</title>
+<title>Newspaper Delivery</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
@@ -76,17 +76,34 @@ button{cursor:pointer;border:0;background:none}
 
 .nexthead{display:flex;align-items:center;margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .nexthead .sp{flex:1}
-.strip{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:4px;-webkit-overflow-scrolling:touch}
-.card{scroll-snap-align:start;flex:0 0 78%;background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:10px 12px}
-.card.sel{border-color:#fbbf24;box-shadow:0 0 0 2px rgba(251,191,36,.35)}
-.card .top{display:flex;gap:10px;align-items:center}
-.card .num{min-width:30px;height:30px;font-size:13px}
-.card .nm{font-weight:800;font-size:18px;line-height:1.1}
-.card .kn{font-size:12px;color:var(--muted)}
-.card .more{display:none}
-.card.open .more,.strip.notes .card .more{display:block}
-.card .hint{font-size:12px;color:var(--muted);margin-top:6px}
-.card.open .hint,.strip.notes .card .hint{display:none}
+/* Compact / expanded direction sheet */
+#dirSheet{max-height:52vh;transition:max-height .25s ease}
+#dirSheet.expanded{max-height:calc(100dvh - var(--tabs) - var(--safe-b) - var(--safe-t) - 64px)}
+.peek{display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x mandatory;padding:2px 0 4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.peek::-webkit-scrollbar{display:none}
+.pk{scroll-snap-align:start;flex:0 0 auto;display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:6px 12px 6px 6px;max-width:75%}
+.pk .num{min-width:28px;height:28px;font-size:12px}
+.pk .nm{font-weight:800;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pk .d{font-size:12px;color:var(--muted);white-space:nowrap}
+.pk .dots{display:flex;gap:3px}
+.pk .dots i{width:8px;height:8px;border-radius:50%}
+.pk.sel{border-color:#fbbf24;box-shadow:0 0 0 2px rgba(251,191,36,.35)}
+.seldetail{margin-top:8px;background:var(--panel2);border:1px solid #fbbf24;border-radius:12px;padding:8px 10px}
+.seldetail .badges{margin-top:4px}
+.pullhint{display:block;width:100%;text-align:center;color:var(--muted);font-size:13px;padding:10px 0 2px}
+.nitem{padding:12px 0;border-bottom:1px solid var(--line)}
+.nitem .top{display:flex;gap:10px;align-items:center}
+.nitem .num{min-width:32px;height:32px;font-size:13px}
+.nitem .nm{font-weight:800;font-size:18px;line-height:1.1}
+.nitem .kn{font-size:12px;color:var(--muted)}
+.atag{font-size:11px;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 5px;margin-left:4px;vertical-align:middle}
+.arow{display:flex;align-items:center;gap:8px;padding:10px 4px;border-bottom:1px solid var(--line)}
+.arow:last-child{border-bottom:0}
+.arow input{width:24px;height:24px;accent-color:var(--accent);flex:none}
+.arow .t{flex:1;min-width:0}
+.arow.editing .t b{color:var(--accent)}
+.arow .ar{display:flex;gap:4px}
+.arow .ar button{width:34px;height:34px;border-radius:9px;background:var(--panel2);border:1px solid var(--line)}
 
 /* Tabs */
 #tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabs) + var(--safe-b));padding-bottom:var(--safe-b);z-index:900;display:flex;background:#0a101c;border-top:1px solid var(--line)}
@@ -163,7 +180,7 @@ body.picking .sheet,body.picking #fabs{display:none!important}
 <body>
 <div id="map"></div>
 
-<div id="topbar"><div class="pill" id="topInfo">Paper Route</div></div>
+<div id="topbar"><div class="pill" id="topInfo">Newspaper Delivery</div></div>
 
 <div id="fabs">
   <button class="fab" id="fabLocate" title="My location">◎</button>

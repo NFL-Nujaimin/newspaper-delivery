@@ -1,6 +1,6 @@
 {
-  "name": "Paper Route",
-  "short_name": "Paper Route",
+  "name": "Newspaper Delivery",
+  "short_name": "Newspaper",
   "description": "Newspaper delivery helper: route, house notes and progress.",
   "start_url": "./",
   "scope": "./",
