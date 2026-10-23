@@ -1,5 +1,5 @@
 // Newspaper Delivery service worker: works offline and keeps map tiles you've already seen.
-const APP_CACHE = 'paper-route-app-v4';
+const APP_CACHE = 'paper-route-app-v5';
 const TILE_CACHE = 'paper-route-tiles-v1';
 const MAX_TILES = 3000;
 const APP_FILES = [

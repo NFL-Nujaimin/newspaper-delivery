@@ -195,7 +195,14 @@ body.picking .sheet,body.picking #fabs{display:none!important}
 .leaflet-tooltip.lbl{display:none;background:rgba(10,16,28,.85);color:#fff;border:0;font-size:12px;font-weight:700;padding:1px 5px;box-shadow:none}
 .leaflet-tooltip.lbl:before{display:none}
 .show-labels .leaflet-tooltip.lbl{display:block}
-.me{width:18px;height:18px;border-radius:50%;background:#3b82f6;border:3px solid #fff;box-shadow:0 0 0 6px rgba(59,130,246,.3)}
+.mewrap{position:relative;width:80px;height:80px;pointer-events:none}
+.mewrap .me{position:absolute;left:31px;top:31px;width:18px;height:18px;border-radius:50%;background:#3b82f6;border:3px solid #fff;box-shadow:0 0 0 6px rgba(59,130,246,.3)}
+/* direction beam: points the way the phone is facing */
+.mewrap .cone{position:absolute;inset:0;display:none;transition:transform .15s linear;
+  background:conic-gradient(from -28deg at 50% 50%, rgba(59,130,246,.75), rgba(59,130,246,.15) 56deg, transparent 56deg);
+  -webkit-mask:radial-gradient(circle at 50% 50%, #000 0 40px, transparent 41px);mask:radial-gradient(circle at 50% 50%, #000 0 40px, transparent 41px)}
+.mewrap.has-heading .cone{display:block}
+.office{width:34px;height:34px;border-radius:9px;background:#f59e0b;border:2px solid #fff;display:grid;place-items:center;font-size:18px;box-shadow:0 1px 4px rgba(0,0,0,.6)}
 
 #toast{position:absolute;left:50%;transform:translateX(-50%);top:calc(64px + var(--safe-t));z-index:2000;background:#f8fafc;color:#0b1220;padding:10px 16px;border-radius:12px;font-weight:700;font-size:14px;display:none;max-width:90%;text-align:center}
 .prog{height:8px;background:var(--panel2);border-radius:5px;overflow:hidden;margin:8px 0}
@@ -215,8 +222,6 @@ body.picking .sheet,body.picking #fabs{display:none!important}
 
 <div id="fabs">
   <button class="fab" id="fabLocate" title="My location">◎</button>
-  <button class="fab" id="fabFit" title="Show whole area">⤢</button>
-  <button class="fab" id="fabFollow" title="Follow me">➤</button>
   <button class="fab add" id="fabAdd" title="Add house at my location">+</button>
 </div>
 

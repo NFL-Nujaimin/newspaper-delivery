@@ -97,7 +97,7 @@ const map = L.map('map', { zoomControl: false, maxZoom: 20 }).setView(DEFAULT_CE
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
 const markerLayer = L.layerGroup().addTo(map);
 let lineToTarget = null, meMarker = null, meAcc = null;
-let myPos = null, watchId = null, follow = false;
+let myPos = null, watchId = null, heading = null, headingSrc = null;
 let tab = 'direction', selectedId = null, expanded = false;
 
 /* Keep the map sized correctly after rotation, keyboard or returning to the app */
@@ -133,14 +133,32 @@ function renderMarkers() {
     m.on('click', () => openInfo(h.id));
     m.addTo(markerLayer);
   });
-  drawLine();
+  drawOffice(); drawRoute(); drawLine();
+}
+const officePos = () => db.office && hasLoc(db.office) ? [db.office.lat, db.office.lng] : null;
+function drawOffice() {
+  const o = officePos(); if (!o) return;
+  const m = L.marker(o, { icon: L.divIcon({ className: '', html: '<div class="office">🏢</div>', iconSize: [34, 34], iconAnchor: [17, 17] }), zIndexOffset: 500 });
+  m.bindTooltip(esc(db.office.name || 'Office'), { permanent: true, direction: 'top', offset: [0, -17], className: 'lbl' });
+  m.on('click', () => toast(`${db.office.name || 'Office'}${myPos ? ' · ' + fmtDist(haversine(myPos, o)) : ''}`));
+  m.addTo(markerLayer);
+}
+// Faint line through the remaining route, starting at the office if delivery hasn't begun
+function drawRoute() {
+  if (tab === 'settings') return;
+  const p = prog(), todo = route().filter(h => statusOf(h) === 'todo' && hasLoc(h)).map(h => [h.lat, h.lng]);
+  const o = officePos();
+  const pts = (o && !p.done.length && !p.skipped.length ? [o] : []).concat(todo);
+  if (pts.length > 1) L.polyline(pts, { color: '#94a3b8', weight: 2, opacity: .45, dashArray: '2 6', interactive: false }).addTo(markerLayer);
 }
 function drawLine() {
   if (lineToTarget) { map.removeLayer(lineToTarget); lineToTarget = null; }
-  const c = current(), p = prog();
-  if (tab === 'direction' && p.started && c && hasLoc(c) && myPos) {
-    lineToTarget = L.polyline([myPos, [c.lat, c.lng]], { color: '#fbbf24', weight: 4, dashArray: '8 8', opacity: .9 }).addTo(map);
-  }
+  const c = current(), p = prog(), o = officePos();
+  if (tab !== 'direction' || !p.started) return;
+  let from = myPos, to = null;
+  if (c && hasLoc(c)) { to = [c.lat, c.lng]; if (!from && o && !p.done.length) from = o; } // first house: from the office
+  else if (!c && o) to = o; // all done: back to the office
+  if (from && to) lineToTarget = L.polyline([from, to], { color: '#fbbf24', weight: 4, dashArray: '8 8', opacity: .9 }).addTo(map);
 }
 function sheetHeight() {
   const s = tab === 'overview' ? $('#ovSheet') : $('#dirSheet');
@@ -151,7 +169,7 @@ function focusPoints(points, minZoom = 17) {
   if (!points.length) return;
   map.stop();
   map.fitBounds(L.latLngBounds(points), {
-    paddingTopLeft: [40, 70], paddingBottomRight: [60, sheetHeight() + 30],
+    paddingTopLeft: [40, 80], paddingBottomRight: [80, sheetHeight() + 30],
     maxZoom: points.length === 1 ? Math.max(minZoom, Math.min(19, map.getZoom())) : 19,
   });
 }
@@ -163,6 +181,7 @@ function focusHouse(h, withMe = true) {
 }
 function fitAll() {
   const pts = mapHouses().filter(hasLoc).map(h => [h.lat, h.lng]);
+  if (officePos()) pts.push(officePos());
   if (pts.length) focusPoints(pts, 10); else if (myPos) map.setView(myPos, 17);
 }
 
@@ -173,10 +192,12 @@ function startGPS() {
     myPos = [pos.coords.latitude, pos.coords.longitude];
     const acc = pos.coords.accuracy;
     if (!meMarker) {
-      meMarker = L.marker(myPos, { icon: L.divIcon({ className: '', html: '<div class="me"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 2000, interactive: false }).addTo(map);
+      meMarker = L.marker(myPos, { icon: L.divIcon({ className: '', html: '<div class="mewrap"><div class="cone"></div><div class="me"></div></div>', iconSize: [80, 80], iconAnchor: [40, 40] }), zIndexOffset: 2000, interactive: false }).addTo(map);
+      if (heading != null) setHeading(heading);
       meAcc = L.circle(myPos, { radius: acc, color: '#3b82f6', weight: 1, fillOpacity: .08, interactive: false }).addTo(map);
     } else { meMarker.setLatLng(myPos); meAcc.setLatLng(myPos).setRadius(acc); }
-    if (follow) map.panTo(myPos, { animate: true });
+    // When cycling, GPS also knows your direction of travel (used if the compass is unavailable)
+    if (headingSrc !== 'compass' && pos.coords.heading != null && !isNaN(pos.coords.heading) && (pos.coords.speed || 0) > 1) { headingSrc = 'gps'; setHeading(pos.coords.heading); }
     drawLine(); renderTop(); updateDistances();
   }, err => {
     if (err.code === 1) toast('Location permission denied. Allow it in iPhone Settings → Privacy → Location.', 4000);
@@ -187,6 +208,40 @@ function getOnce() {
     if (!navigator.geolocation) return rej(new Error('No GPS'));
     navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   });
+}
+
+/* ---------- compass (which way the phone is facing) ---------- */
+let shownAngle = null;
+function setHeading(deg) {
+  heading = deg;
+  const el = meMarker?.getElement()?.querySelector('.mewrap'); if (!el) return;
+  // turn the short way round (e.g. 350° → 10° goes +20°, not −340°)
+  if (shownAngle == null) shownAngle = deg;
+  else { let d = ((deg - shownAngle) % 360 + 540) % 360 - 180; shownAngle += d; }
+  el.classList.add('has-heading');
+  el.querySelector('.cone').style.transform = `rotate(${shownAngle}deg)`;
+}
+function onOrientation(e) {
+  let h = null;
+  if (typeof e.webkitCompassHeading === 'number') h = e.webkitCompassHeading;          // iPhone
+  else if (e.absolute && typeof e.alpha === 'number') h = (360 - e.alpha) % 360;       // Android
+  if (h == null) return;
+  h = (h + (screen.orientation?.angle || window.orientation || 0) + 360) % 360;
+  headingSrc = 'compass'; setHeading(h);
+}
+let compassOn = false;
+// iPhone only allows the compass after a tap, so this is called from Start / ◎ buttons.
+async function enableCompass() {
+  if (compassOn) return;
+  try {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r !== 'granted') { toast('Compass not allowed — direction shows only while moving', 3000); return; }
+    }
+    window.addEventListener('deviceorientation', onOrientation, true);
+    window.addEventListener('deviceorientationabsolute', onOrientation, true);
+    compassOn = true;
+  } catch (e) {}
 }
 
 /* ---------- wake lock ---------- */
@@ -264,7 +319,7 @@ function renderDirection() {
     const midway = p.done.length > 0 && !!c;
     const hold = activeAreas().reduce((s, a) => s + a.houses.length, 0) - r.length;
     body.innerHTML = `<div style="font-size:20px;font-weight:800;margin:4px 0">${esc(activeAreas().map(a => a.name).join(' + '))}</div>
-      <div class="muted">${r.length} houses today${hold ? ` · ${hold} on hold` : ''}</div>
+      <div class="muted">${r.length} houses today${hold ? ` · ${hold} on hold` : ''}${officePos() && c && hasLoc(c) && !midway ? ` · office → #${houseNo(c)} ${fmtDist(haversine(officePos(), [c.lat, c.lng]))}` : ''}</div>
       <div class="badges">${PAPERS.map(pp => `<span class="b ${pp.cls}">${pp.label} ×${t[pp.key]}</span>`).join('')}</div>
       ${midway ? `<div class="muted" style="margin-top:8px">Paused: ${p.done.length} done, ${todoCount()} left</div>` : ''}
       <div class="actions"><button class="btn primary" id="startBtn">▶ ${midway ? 'Continue' : 'Start'} delivery</button></div>
@@ -277,7 +332,8 @@ function renderDirection() {
   // Finished
   if (!c) {
     const sk = r.filter(h => statusOf(h) === 'skipped');
-    body.innerHTML = `<div class="empty" style="font-size:20px">🎉 All done!</div>
+    const o = officePos();
+    body.innerHTML = `<div class="empty" style="font-size:20px">🎉 All done!${o ? `<div class="muted" style="font-size:14px;margin-top:4px">Head back to the office${myPos ? ` · <span id="officeDist">${fmtDist(haversine(myPos, o))}</span>` : ''}</div>` : ''}</div>
       ${sk.length ? `<div class="nexthead">Skipped — tap to deliver now</div>
         ${sk.map(h => `<div class="hl" data-unskip="${h.id}">${numHTML(h)}<div class="t"><div><b>${esc(h.kanji)}</b> <span class="muted">${esc(h.kana)}</span>${areaTag(h)}</div></div><span>›</span></div>`).join('')}` : ''}
       <div class="actions"><button class="btn" id="undoBtn">↶ Undo</button><button class="btn primary" id="finishBtn">Finish</button></div>`;
@@ -350,6 +406,7 @@ function openMenu(c) {
   $('#info').classList.add('show');
 }
 function updateDistances() {
+  const od = $('#officeDist'); if (od && myPos && officePos()) od.textContent = fmtDist(haversine(myPos, officePos()));
   document.querySelectorAll('[data-dist]').forEach(el => {
     const h = findHouse(el.dataset.dist); if (h) el.textContent = fmtDist(distTo(h));
   });
@@ -381,9 +438,13 @@ function updateDistances() {
 function startDelivery() {
   let p = prog();
   if (!current()) { db.progress = p = newProgress(); } // previous round finished → fresh start
+  const fresh = !p.done.length && !p.skipped.length;
   p.started = true; save();
-  startGPS(); keepAwake(); expanded = false; selectedId = null;
-  render(); focusHouse(current());
+  startGPS(); enableCompass(); keepAwake(); expanded = false; selectedId = null;
+  render();
+  const c = current(), o = officePos();
+  if (fresh && o && c && hasLoc(c) && !(myPos && haversine(myPos, o) > 300)) focusPoints([o, [c.lat, c.lng]].concat(myPos ? [myPos] : []), 15);
+  else focusHouse(c);
 }
 function finishDelivery() {
   db.progress = newProgress(); save(); // back to the Start page
@@ -553,15 +614,28 @@ function saveEditor() {
 }
 
 /* ---------- Pick on map ---------- */
-function startPick() {
-  closeModal('editor');
+// pickCtx: { start:[lat,lng]|null, set(lat,lng), done(), prevTab }
+let pickCtx = null;
+function beginPick(ctx) {
+  pickCtx = ctx;
+  if (tab === 'settings') { ctx.prevTab = 'settings'; $('#settingsPage').style.display = 'none'; }
   document.body.classList.add('picking');
   renderMarkers();
-  if (hasLoc(ed)) map.setView([ed.lat, ed.lng], Math.max(map.getZoom(), 18));
+  if (ctx.start) map.setView(ctx.start, Math.max(map.getZoom(), 18));
   else if (myPos) map.setView(myPos, 18);
 }
-function endPick() { document.body.classList.remove('picking'); renderEditor(); $('#editor').classList.add('show'); }
-$('#pickSet').onclick = () => { const c = map.getCenter(); ed.lat = c.lat; ed.lng = c.lng; endPick(); };
+function endPick() {
+  document.body.classList.remove('picking');
+  const ctx = pickCtx; pickCtx = null;
+  if (ctx?.prevTab === 'settings') $('#settingsPage').style.display = '';
+  ctx?.done();
+}
+function startPick() {
+  closeModal('editor');
+  beginPick({ start: hasLoc(ed) ? [ed.lat, ed.lng] : null, set: (lat, lng) => { ed.lat = lat; ed.lng = lng; },
+    done: () => { renderEditor(); $('#editor').classList.add('show'); } });
+}
+$('#pickSet').onclick = () => { const c = map.getCenter(); pickCtx?.set(c.lat, c.lng); endPick(); };
 $('#pickCancel').onclick = endPick;
 
 /* ---------- Settings ---------- */
@@ -593,6 +667,11 @@ function renderSettings() {
           <div class="ar"><button data-up="${i}">↑</button><button data-down="${i}">↓</button></div>
         </div>`).join('') : '<div class="muted">No houses yet.</div>'}
     </div>
+    <div class="sec"><h3>Office (start point)</h3>
+      <div class="muted" style="margin-bottom:8px">Delivery starts here, then goes to house #1. ${officePos() ? `Set (${db.office.lat.toFixed(5)}, ${db.office.lng.toFixed(5)})` : 'Not set yet.'}</div>
+      <input type="text" id="oName" value="${esc(db.office?.name || '')}" placeholder="Office name (e.g. 販売店)">
+      <div class="row" style="margin-top:8px"><button class="btn small" id="oGps">📍 Use my location</button><button class="btn small" id="oPick">🎯 Pick on map</button>${officePos() ? '<button class="btn small danger" id="oClear">Clear</button>' : ''}</div>
+    </div>
     <div class="sec"><h3>Today</h3>
       <div class="row"><button class="btn small" id="sReset">Reset today's progress</button></div>
       <label class="chk"><input type="checkbox" id="sWake" ${db.settings.wake ? 'checked' : ''}> Keep screen on while delivering</label>
@@ -605,8 +684,10 @@ function renderSettings() {
     <div class="sec"><h3>Help</h3><div class="muted" style="line-height:1.5">
       <b>Add houses:</b> stand at the door, tap <b>+</b> on the Direction map. Add them in delivery order.<br>
       <b>Deliver:</b> Direction → Start → Done at each house. Swipe the panel up to see the next houses, swipe the cards sideways, tap a card to show it on the map. ⋯ has Open in Maps, Edit and Pause.<br>
+      <b>Office:</b> set it under Office; the route starts there and the 🏢 shows on the map.<br>
+      <b>Compass:</b> the blue beam on your dot shows which way the phone faces. Allow Motion access when asked.<br>
       <b>On hold:</b> set stop dates in a house to hide it from the route (休止).</div></div>
-    <div class="muted" style="text-align:center">Newspaper Delivery v4</div>`;
+    <div class="muted" style="text-align:center">Newspaper Delivery v5</div>`;
   const pg = $('#settingsPage');
   pg.querySelectorAll('[data-active]').forEach(cb => cb.onchange = () => {
     const id = cb.dataset.active;
@@ -640,6 +721,15 @@ function renderSettings() {
     if (j < 0 || j >= ea.houses.length) return;
     [ea.houses[i], ea.houses[j]] = [ea.houses[j], ea.houses[i]]; save(); renderSettings();
   });
+  const setOffice = (lat, lng) => { db.office = { ...(db.office || {}), name: $('#oName')?.value.trim() || db.office?.name || 'Office', lat, lng }; save(); };
+  $('#oName').onchange = e => { if (db.office) { db.office.name = e.target.value.trim(); save(); } };
+  $('#oGps').onclick = async () => {
+    toast('Getting GPS…');
+    try { const g = await getOnce(); setOffice(g.coords.latitude, g.coords.longitude); toast(`Office set (±${Math.round(g.coords.accuracy)} m)`); renderSettings(); }
+    catch (e) { toast('Could not get GPS. Use "Pick on map".'); }
+  };
+  $('#oPick').onclick = () => beginPick({ start: officePos(), set: setOffice, done: () => { renderSettings(); renderMarkers(); } });
+  if ($('#oClear')) $('#oClear').onclick = () => { if (confirm('Remove the office location?')) { db.office = null; save(); renderSettings(); } };
   $('#sReset').onclick = () => { if (confirm("Reset today's done/skipped marks?")) { db.progress = newProgress(); save(); toast('Reset'); } };
   $('#sWake').onchange = e => { db.settings.wake = e.target.checked; save(); };
   $('#sDark').onchange = e => { db.settings.darkMap = e.target.checked; save(); applyMapStyle(); };
@@ -647,7 +737,7 @@ function renderSettings() {
   $('#sImport').onclick = () => $('#importFile').click();
 }
 async function exportData() {
-  const data = JSON.stringify({ app: 'newspaper-delivery', version: 2, exported: new Date().toISOString(), areas: db.areas, activeAreaIds: db.activeAreaIds, settings: db.settings }, null, 2);
+  const data = JSON.stringify({ app: 'newspaper-delivery', version: 2, exported: new Date().toISOString(), areas: db.areas, activeAreaIds: db.activeAreaIds, office: db.office || null, settings: db.settings }, null, 2);
   const name = `newspaper-delivery-backup-${today()}.json`;
   const file = new File([data], name, { type: 'application/json' });
   try {
@@ -667,6 +757,7 @@ $('#importFile').onchange = async e => {
     db.areas = d.areas;
     db.activeAreaIds = Array.isArray(d.activeAreaIds) ? d.activeAreaIds : d.areas.slice(0, 1).map(a => a.id);
     if (d.settings) Object.assign(db.settings, d.settings);
+    if ('office' in d) db.office = d.office;
     db.progress = null; db = normalize(db); save(); applyMapStyle(); render(); toast('Backup restored');
   } catch (err) { toast('That file is not a valid backup', 3000); }
 };
@@ -714,12 +805,7 @@ function render() {
 }
 document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => setTab(b.dataset.tab));
 $('#ovHandle').onclick = () => $('#ovSheet').classList.toggle('mini');
-$('#fabLocate').onclick = () => { startGPS(); if (myPos) map.setView(myPos, Math.max(map.getZoom(), 18)); else toast('Finding you…'); };
-$('#fabFit').onclick = fitAll;
-$('#fabFollow').onclick = () => {
-  follow = !follow; $('#fabFollow').classList.toggle('on', follow); startGPS();
-  toast(follow ? 'Following your position' : 'Follow off'); if (follow && myPos) map.panTo(myPos);
-};
+$('#fabLocate').onclick = () => { startGPS(); enableCompass(); if (myPos) map.setView(myPos, Math.max(map.getZoom(), 18)); else toast('Finding you…'); };
 $('#fabAdd').onclick = async () => {
   startGPS();
   // While delivering, insert right after the current house; otherwise at the end of the area.
