@@ -9,8 +9,7 @@ const PAPERS = [
 const PLACE_CHIPS = ['Mailbox', 'Front-door post (玄関ポスト)', 'Push all the way in (落としこむ)', 'Door gap', 'Hand to person'];
 const LS_KEY = 'paperRoute.v1'; // kept from the first version so existing data is preserved
 const DEFAULT_CENTER = [38.268, 140.87]; // Sendai
-const PEEK_COUNT = 8;   // houses in the slim "Next" row
-const LIST_COUNT = 40;  // houses in the swiped-up list
+const LIST_COUNT = 30;  // next-house cards in the swiped-up row
 
 /* ---------- helpers ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -100,6 +99,24 @@ const markerLayer = L.layerGroup().addTo(map);
 let lineToTarget = null, meMarker = null, meAcc = null;
 let myPos = null, watchId = null, follow = false;
 let tab = 'direction', selectedId = null, expanded = false;
+
+/* iOS home-screen apps sometimes report a viewport that is too short, leaving a
+   gap under the bottom bar. Size the app box to the real screen instead. */
+function fitApp() {
+  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  let h = window.innerHeight;
+  if (standalone) {
+    const portrait = window.innerWidth <= window.innerHeight;
+    const screenH = portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+    h = Math.max(h, screenH);
+  }
+  document.documentElement.style.setProperty('--app-h', h + 'px');
+  map.invalidateSize();
+}
+['resize', 'orientationchange', 'pageshow'].forEach(ev => window.addEventListener(ev, () => setTimeout(fitApp, 50)));
+window.visualViewport?.addEventListener('resize', () => setTimeout(fitApp, 50));
+// after the keyboard closes, put the page back in place (iOS can leave it shifted)
+document.addEventListener('focusout', () => setTimeout(() => { window.scrollTo(0, 0); fitApp(); }, 100));
 
 function applyMapStyle() { document.body.classList.toggle('dark-tiles', !!db.settings.darkMap); }
 map.on('zoomend', () => $('#map').classList.toggle('show-labels', map.getZoom() >= 18));
@@ -228,13 +245,15 @@ const distTo = h => myPos && hasLoc(h) ? haversine(myPos, [h.lat, h.lng]) : null
 function setExpanded(v) {
   if (expanded === v) return;
   expanded = v;
-  renderDirection();
-  $('#dirBody').scrollTop = 0;
+  if (!v && selectedId) { selectedId = null; renderMarkers(); document.querySelectorAll('.ncard.sel').forEach(x => x.classList.remove('sel')); }
+  $('#dirSheet').classList.toggle('expanded', v && prog().started && !!current());
+  // wait for the slide animation, then keep the house visible above the panel
+  setTimeout(() => focusHouse(selectedId ? findHouse(selectedId) : current(), !selectedId), 280);
 }
 function renderDirection() {
   const body = $('#dirBody'), p = prog(), r = route(), c = current();
-  const sheet = $('#dirSheet');
-  sheet.classList.toggle('expanded', expanded && p.started && !!c);
+  $('#dirSheet').classList.toggle('expanded', expanded && p.started && !!c);
+  $('#dirHint').textContent = '';
 
   if (!activeAreas().length) {
     body.innerHTML = `<div class="empty">No area selected for today.<br>Pick your area(s) in Settings.</div>
@@ -283,7 +302,9 @@ function renderDirection() {
 
   // Delivering
   const left = todoCount() - 1;
-  const curHTML = `
+  const next = upcoming(LIST_COUNT);
+  $('#dirHint').textContent = left > 0 ? `︿ swipe up · ${left} next` : 'last house';
+  body.innerHTML = `
     <div class="cur">${numHTML(c)}
       <div style="flex:1;min-width:0"><div class="name">${esc(c.kanji || '(no name)')}${areaTag(c)}</div><div class="kana">${esc(c.kana)}</div></div>
       <div class="dist" data-dist="${c.id}">${fmtDist(distTo(c))}</div>
@@ -292,62 +313,52 @@ function renderDirection() {
     <div class="actions">
       <button class="btn" id="undoBtn" ${p.history.length ? '' : 'disabled style="opacity:.4"'}>↶</button>
       <button class="btn" id="skipBtn">Skip</button>
+      <button class="btn" id="moreBtn">⋯</button>
       <button class="btn primary" id="doneBtn">✓ Done</button>
+    </div>
+    <div class="nextwrap">
+      <div class="nexthead">Next · ${left} left<span class="sp"></span><span style="text-transform:none;letter-spacing:0">swipe ← →</span></div>
+      ${next.length ? `<div class="nstrip" id="nstrip">${next.map(h => `
+        <div class="ncard ${h.id === selectedId ? 'sel' : ''}" data-id="${h.id}">
+          <div class="top">${numHTML(h)}<div style="flex:1;min-width:0"><div class="nm">${esc(h.kanji || '(no name)')}${areaTag(h)}</div><div class="kn">${esc(h.kana)}</div></div>
+          <div class="dist" data-dist="${h.id}">${fmtDist(distTo(h))}</div></div>
+          ${badgesHTML(h)}${noteHTML(h)}
+          <div class="row" style="margin-top:8px"><button class="btn small" data-done="${h.id}">✓ Done</button><button class="btn small" data-edit="${h.id}">Edit</button><span class="hint">Tap card = show on map</span></div>
+        </div>`).join('')}</div>` : '<div class="muted" style="padding:6px 0 10px">This is the last house.</div>'}
     </div>`;
-
-  if (!expanded) {
-    const next = upcoming(PEEK_COUNT);
-    const sel = next.find(h => h.id === selectedId);
-    body.innerHTML = curHTML + (next.length ? `
-      <div class="nexthead">Next${left > 0 ? ` · ${left} left` : ''}</div>
-      <div class="peek" id="peek">${next.map(h => `
-        <button class="pk ${h.id === selectedId ? 'sel' : ''}" data-id="${h.id}">${numHTML(h)}
-          <div style="min-width:0;text-align:left"><div class="nm">${esc(h.kanji || '(no name)')}</div>
-          <div class="d"><span class="dots">${paperCols(h).map(col => `<i style="background:${col}"></i>`).join('')}</span> <span data-dist="${h.id}">${fmtDist(distTo(h))}</span>${h.note ? ' · 📝' : ''}</div></div>
-        </button>`).join('')}</div>
-      ${sel ? `<div class="seldetail"><div style="font-weight:800">#${houseNo(sel)} ${esc(sel.kanji)} <span class="muted">${esc(sel.kana)}</span>${areaTag(sel)}</div>${badgesHTML(sel)}${noteHTML(sel)}</div>` : ''}
-      <button class="pullhint" id="pullHint">︿ Swipe up for all next houses</button>`
-      : '<div class="muted" style="margin-top:10px">This is the last house.</div>');
-    body.querySelectorAll('.pk').forEach(el => el.onclick = () => {
-      const id = el.dataset.id;
-      if (selectedId === id) { selectedId = null; render(); focusHouse(current()); return; }
-      selectedId = id; render(); focusHouse(findHouse(id), false);
-      const again = $(`.pk[data-id="${id}"]`); again?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-    });
-    if ($('#pullHint')) $('#pullHint').onclick = () => setExpanded(true);
-  } else {
-    const list = upcoming(LIST_COUNT);
-    body.innerHTML = curHTML + `
-      <div class="nexthead">Next houses · ${left} left<span class="sp"></span><button class="btn small" id="collapseBtn">﹀ Back</button></div>
-      ${list.map(h => `<div class="nitem" data-id="${h.id}">
-        <div class="top">${numHTML(h)}<div style="flex:1;min-width:0"><div class="nm">${esc(h.kanji || '(no name)')}${areaTag(h)}</div><div class="kn">${esc(h.kana)}</div></div>
-        <div class="dist" data-dist="${h.id}">${fmtDist(distTo(h))}</div></div>
-        ${badgesHTML(h)}${noteHTML(h)}
-        <div class="row" style="margin-top:8px"><button class="btn small" data-show="${h.id}">Show on map</button><button class="btn small" data-done="${h.id}">✓ Mark done</button><button class="btn small" data-edit="${h.id}">Edit</button></div>
-      </div>`).join('')}
-      ${left > LIST_COUNT ? `<div class="muted" style="padding:10px 0">…and ${left - LIST_COUNT} more</div>` : ''}
-      <div class="row" style="margin-top:12px">
-        <button class="btn small" id="navBtn">Open in Maps</button>
-        <button class="btn small" id="editCurBtn">Edit this house</button>
-        <span style="flex:1"></span>
-        <button class="btn small" id="pauseBtn">Pause</button>
-      </div>`;
-    $('#collapseBtn').onclick = () => setExpanded(false);
-    body.querySelectorAll('[data-show]').forEach(b => b.onclick = () => {
-      selectedId = b.dataset.show; expanded = false; render(); focusHouse(findHouse(selectedId), false);
-    });
-    body.querySelectorAll('[data-done]').forEach(b => b.onclick = () => markDone(b.dataset.done));
-    body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openEditor(b.dataset.edit));
-    $('#navBtn').onclick = () => { if (hasLoc(c)) location.href = `https://maps.apple.com/?daddr=${c.lat},${c.lng}&dirflg=w`; };
-    $('#editCurBtn').onclick = () => openEditor(c.id);
-    $('#pauseBtn').onclick = () => { p.started = false; expanded = false; save(); releaseWake(); render(); };
-  }
+  body.querySelectorAll('.ncard').forEach(el => el.onclick = e => {
+    if (e.target.closest('button')) return;
+    const id = el.dataset.id, wasSel = selectedId === id;
+    body.querySelectorAll('.ncard').forEach(x => x.classList.remove('sel'));
+    selectedId = wasSel ? null : id;
+    if (!wasSel) el.classList.add('sel');
+    renderMarkers();
+    focusHouse(wasSel ? current() : findHouse(id), wasSel);
+  });
+  body.querySelectorAll('[data-done]').forEach(b => b.onclick = () => markDone(b.dataset.done));
+  body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openEditor(b.dataset.edit));
   $('#doneBtn').onclick = () => markDone(c.id);
   $('#skipBtn').onclick = () => {
     p.skipped.push(c.id); p.history.push({ t: 'skip', id: c.id }); save();
     selectedId = null; render(); focusHouse(current());
   };
   $('#undoBtn').onclick = undo;
+  $('#moreBtn').onclick = () => openMenu(c);
+}
+function openMenu(c) {
+  $('#infoBox').innerHTML = `
+    <h3 style="margin-bottom:12px">#${houseNo(c)} ${esc(c.kanji)}</h3>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btn" id="mNav">🧭 Open in Apple Maps</button>
+      <button class="btn" id="mEdit">✏️ Edit this house</button>
+      <button class="btn" id="mPause">⏸ Pause delivery</button>
+      <button class="btn" id="mClose">Close</button>
+    </div>`;
+  $('#mNav').onclick = () => { if (hasLoc(c)) location.href = `https://maps.apple.com/?daddr=${c.lat},${c.lng}&dirflg=w`; };
+  $('#mEdit').onclick = () => { closeModal('info'); openEditor(c.id); };
+  $('#mPause').onclick = () => { const p = prog(); p.started = false; expanded = false; save(); releaseWake(); closeModal('info'); render(); };
+  $('#mClose').onclick = () => closeModal('info');
+  $('#info').classList.add('show');
 }
 function updateDistances() {
   document.querySelectorAll('[data-dist]').forEach(el => {
@@ -360,14 +371,18 @@ function updateDistances() {
   const sheet = $('#dirSheet'), body = $('#dirBody');
   let g = null;
   sheet.addEventListener('touchstart', e => {
-    const t = e.touches[0];
-    g = { x: t.clientX, y: t.clientY, top: body.scrollTop, atBottom: body.scrollTop + body.clientHeight >= body.scrollHeight - 4 };
+    const t = e.touches[0], card = e.target.closest('.ncard');
+    g = {
+      x: t.clientX, y: t.clientY, top: body.scrollTop,
+      atBottom: body.scrollTop + body.clientHeight >= body.scrollHeight - 4,
+      cardScrolls: !!card && card.scrollHeight > card.clientHeight + 2, // long note inside a card
+    };
   }, { passive: true });
   sheet.addEventListener('touchend', e => {
     if (!g) return;
     const t = e.changedTouches[0], dx = t.clientX - g.x, dy = t.clientY - g.y, s = g; g = null;
-    if (Math.abs(dy) < 45 || Math.abs(dy) < Math.abs(dx) * 1.5) return; // ignore taps & sideways swipes
-    if (!prog().started || !current()) return;
+    if (Math.abs(dy) < 40 || Math.abs(dy) < Math.abs(dx) * 1.3) return; // taps & sideways swipes
+    if (s.cardScrolls || !prog().started || !current()) return;
     if (dy < 0 && !expanded && s.atBottom) setExpanded(true);
     else if (dy > 0 && expanded && s.top <= 0) setExpanded(false);
   }, { passive: true });
@@ -391,8 +406,8 @@ function markDone(id) {
   if (!p.done.includes(id)) p.done.push(id);
   p.skipped = p.skipped.filter(x => x !== id);
   p.history.push({ t: 'done', id });
-  save(); if (selectedId === id || !expanded) selectedId = null;
-  closeModal('info'); render(); if (!expanded) focusHouse(current());
+  save(); selectedId = null;
+  closeModal('info'); render(); focusHouse(current());
 }
 function undo() {
   const p = prog(), last = p.history.pop(); if (!last) return;
@@ -600,9 +615,9 @@ function renderSettings() {
     </div>
     <div class="sec"><h3>Help</h3><div class="muted" style="line-height:1.5">
       <b>Add houses:</b> stand at the door, tap <b>+</b> on the Direction map. Add them in delivery order.<br>
-      <b>Deliver:</b> Direction → Start → Done at each house. Tap a house in "Next" to show it on the map. Swipe the panel up to see all next houses.<br>
+      <b>Deliver:</b> Direction → Start → Done at each house. Swipe the panel up to see the next houses, swipe the cards sideways, tap a card to show it on the map. ⋯ has Open in Maps, Edit and Pause.<br>
       <b>On hold:</b> set stop dates in a house to hide it from the route (休止).</div></div>
-    <div class="muted" style="text-align:center">Newspaper Delivery v2</div>`;
+    <div class="muted" style="text-align:center">Newspaper Delivery v3</div>`;
   const pg = $('#settingsPage');
   pg.querySelectorAll('[data-active]').forEach(cb => cb.onchange = () => {
     const id = cb.dataset.active;
@@ -728,6 +743,7 @@ $('#fabAdd').onclick = async () => {
 };
 
 /* ---------- boot ---------- */
+fitApp(); setTimeout(fitApp, 300); setTimeout(fitApp, 1200);
 applyMapStyle();
 setTab('direction');
 fitAll();

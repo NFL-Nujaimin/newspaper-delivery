@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -20,32 +20,40 @@
   --tabs:58px; --safe-b:env(safe-area-inset-bottom,0px); --safe-t:env(safe-area-inset-top,0px);
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+html,body{margin:0;height:100%;width:100%;overflow:hidden;position:fixed;inset:0;background:var(--bg);color:var(--text);
   font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Hiragino Kaku Gothic ProN","Segoe UI",sans-serif;
   overscroll-behavior:none;-webkit-user-select:none;user-select:none}
 input,textarea,select,button{font:inherit;color:inherit}
 input,textarea{-webkit-user-select:text;user-select:text}
 button{cursor:pointer;border:0;background:none}
-#map{position:fixed;inset:0;bottom:calc(var(--tabs) + var(--safe-b));background:#1b2333}
+/* The whole app lives in one box sized to the real screen (see fitApp in app.js).
+   This avoids the iOS home-screen bug that leaves a gap under bottom bars. */
+#app{position:fixed;left:0;top:0;width:100%;height:var(--app-h,100%);overflow:hidden}
+/* No double-tap zoom or sideways dragging; only vertical scrolling inside panels */
+button,input,select,textarea,label,#tabs,#topbar,#fabs{touch-action:manipulation}
+.sheet,.page,.modal,.modal .box{touch-action:pan-y}
+.peek,.nstrip{touch-action:pan-x pan-y}
+.page,.modal .box,.sheet .body{overscroll-behavior:contain;overflow-x:hidden}
+#map{position:absolute;inset:0;bottom:calc(var(--tabs) + var(--safe-b));background:#1b2333}
 .dark-tiles .leaflet-tile{filter:invert(1) hue-rotate(180deg) brightness(.9) contrast(.9) saturate(.7)}
 .leaflet-control-attribution{font-size:9px;background:rgba(0,0,0,.45)!important;color:#aaa!important}
 .leaflet-control-attribution a{color:#ccc!important}
 .leaflet-control-zoom{display:none}
 
 /* Top bar */
-#topbar{position:fixed;left:10px;right:10px;top:calc(8px + var(--safe-t));z-index:500;display:flex;gap:8px;align-items:center;pointer-events:none}
+#topbar{position:absolute;left:10px;right:10px;top:calc(8px + var(--safe-t));z-index:500;display:flex;gap:8px;align-items:center;pointer-events:none}
 #topbar .pill{pointer-events:auto;background:rgba(17,26,43,.92);border:1px solid var(--line);border-radius:14px;padding:8px 12px;font-size:14px;backdrop-filter:blur(8px)}
 #topInfo{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #topInfo b{color:var(--accent)}
 
 /* Floating map buttons */
-#fabs{position:fixed;right:10px;z-index:500;display:flex;flex-direction:column;gap:8px;top:calc(60px + var(--safe-t))}
+#fabs{position:absolute;right:10px;z-index:500;display:flex;flex-direction:column;gap:8px;top:calc(60px + var(--safe-t))}
 .fab{width:44px;height:44px;border-radius:12px;background:rgba(17,26,43,.92);border:1px solid var(--line);display:grid;place-items:center;font-size:20px}
 .fab.on{border-color:var(--accent);color:var(--accent)}
 .fab.add{background:var(--accent);color:#04210f;border-color:var(--accent);font-size:26px;font-weight:700}
 
 /* Bottom sheets */
-.sheet{position:fixed;left:0;right:0;bottom:calc(var(--tabs) + var(--safe-b));z-index:600;background:var(--panel);border-top:1px solid var(--line);
+.sheet{position:absolute;left:0;right:0;bottom:calc(var(--tabs) + var(--safe-b));z-index:600;background:var(--panel);border-top:1px solid var(--line);
   border-radius:18px 18px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.45);max-height:62vh;display:flex;flex-direction:column}
 .sheet .handle{padding:8px 0 4px;display:flex;justify-content:center}
 .sheet .handle i{width:42px;height:5px;border-radius:3px;background:var(--line)}
@@ -77,8 +85,23 @@ button{cursor:pointer;border:0;background:none}
 .nexthead{display:flex;align-items:center;margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 .nexthead .sp{flex:1}
 /* Compact / expanded direction sheet */
-#dirSheet{max-height:52vh;transition:max-height .25s ease}
-#dirSheet.expanded{max-height:calc(100dvh - var(--tabs) - var(--safe-b) - var(--safe-t) - 64px)}
+#dirSheet{max-height:80%}
+#dirSheet .handle{flex-direction:column;align-items:center;gap:3px;padding:8px 0 6px}
+#dirSheet .handle span{font-size:11px;color:var(--muted);letter-spacing:.04em}
+#dirSheet.expanded .handle span{display:none}
+/* Next houses: hidden until swiped up, then slides up a fixed height */
+.nextwrap{max-height:0;overflow:hidden;transition:max-height .25s ease}
+#dirSheet.expanded .nextwrap{max-height:250px}
+.nstrip{display:flex;gap:10px;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;padding:2px 0 4px;scrollbar-width:none}
+.nstrip::-webkit-scrollbar{display:none}
+.ncard{scroll-snap-align:start;flex:0 0 86%;height:200px;overflow-y:auto;overscroll-behavior:contain;background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:10px 12px;touch-action:pan-x pan-y}
+.ncard.sel{border-color:#fbbf24;box-shadow:0 0 0 2px rgba(251,191,36,.35)}
+.ncard .top{display:flex;gap:10px;align-items:center}
+.ncard .num{min-width:32px;height:32px;font-size:13px}
+.ncard .nm{font-weight:800;font-size:18px;line-height:1.1}
+.ncard .kn{font-size:12px;color:var(--muted)}
+.ncard .note{background:var(--panel)}
+.ncard .hint{font-size:11px;color:var(--muted);margin-top:6px}
 .peek{display:flex;gap:8px;overflow-x:auto;scroll-snap-type:x mandatory;padding:2px 0 4px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
 .peek::-webkit-scrollbar{display:none}
 .pk{scroll-snap-align:start;flex:0 0 auto;display:flex;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:6px 12px 6px 6px;max-width:75%}
@@ -106,13 +129,13 @@ button{cursor:pointer;border:0;background:none}
 .arow .ar button{width:34px;height:34px;border-radius:9px;background:var(--panel2);border:1px solid var(--line)}
 
 /* Tabs */
-#tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--tabs) + var(--safe-b));padding-bottom:var(--safe-b);z-index:900;display:flex;background:#0a101c;border-top:1px solid var(--line)}
+#tabs{position:absolute;left:0;right:0;bottom:0;height:calc(var(--tabs) + var(--safe-b));padding-bottom:var(--safe-b);z-index:900;display:flex;background:#0a101c;border-top:1px solid var(--line)}
 #tabs button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:11px;color:var(--muted)}
 #tabs button span{font-size:20px;line-height:1}
 #tabs button.on{color:var(--accent)}
 
 /* Settings page */
-.page{position:fixed;inset:0;bottom:calc(var(--tabs) + var(--safe-b));z-index:800;background:var(--bg);overflow-y:auto;padding:calc(14px + var(--safe-t)) 14px 30px;-webkit-overflow-scrolling:touch}
+.page{position:absolute;inset:0;bottom:calc(var(--tabs) + var(--safe-b));z-index:800;background:var(--bg);overflow-y:auto;padding:calc(14px + var(--safe-t)) 14px 30px;-webkit-overflow-scrolling:touch}
 .page h2{font-size:22px;margin:4px 0 12px}
 .sec{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:14px}
 .sec h3{margin:0 0 10px;font-size:15px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
@@ -133,7 +156,7 @@ label.f{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
 .chk input{width:22px;height:22px;accent-color:var(--accent)}
 
 /* Editor modal */
-.modal{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.55);display:none;align-items:flex-end}
+.modal{position:absolute;inset:0;z-index:1000;background:rgba(0,0,0,.55);display:none;align-items:flex-end}
 .modal.show{display:flex}
 .modal .box{background:var(--panel);width:100%;max-height:92vh;overflow-y:auto;border-radius:18px 18px 0 0;padding:16px 16px calc(20px + var(--safe-b));-webkit-overflow-scrolling:touch}
 .modal h3{margin:0 0 4px;font-size:20px}
@@ -146,11 +169,11 @@ label.f{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
 .chips button{font-size:13px;padding:6px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line)}
 
 /* Pick mode */
-#crosshair{position:fixed;z-index:700;left:50%;top:calc((100% - var(--tabs) - var(--safe-b)) / 2);width:44px;height:44px;margin:-22px 0 0 -22px;display:none;pointer-events:none}
+#crosshair{position:absolute;z-index:700;left:50%;top:calc((100% - var(--tabs) - var(--safe-b)) / 2);width:44px;height:44px;margin:-22px 0 0 -22px;display:none;pointer-events:none}
 #crosshair:before,#crosshair:after{content:"";position:absolute;background:#fbbf24;box-shadow:0 0 0 1px #000}
 #crosshair:before{left:21px;top:0;width:2px;height:44px}
 #crosshair:after{top:21px;left:0;height:2px;width:44px}
-#pickbar{position:fixed;left:10px;right:10px;bottom:calc(var(--tabs) + var(--safe-b) + 10px);z-index:950;display:none;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px}
+#pickbar{position:absolute;left:10px;right:10px;bottom:calc(var(--tabs) + var(--safe-b) + 10px);z-index:950;display:none;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px}
 body.picking #crosshair,body.picking #pickbar{display:block}
 body.picking .sheet,body.picking #fabs{display:none!important}
 
@@ -167,7 +190,7 @@ body.picking .sheet,body.picking #fabs{display:none!important}
 .show-labels .leaflet-tooltip.lbl{display:block}
 .me{width:18px;height:18px;border-radius:50%;background:#3b82f6;border:3px solid #fff;box-shadow:0 0 0 6px rgba(59,130,246,.3)}
 
-#toast{position:fixed;left:50%;transform:translateX(-50%);top:calc(64px + var(--safe-t));z-index:2000;background:#f8fafc;color:#0b1220;padding:10px 16px;border-radius:12px;font-weight:700;font-size:14px;display:none;max-width:90%;text-align:center}
+#toast{position:absolute;left:50%;transform:translateX(-50%);top:calc(64px + var(--safe-t));z-index:2000;background:#f8fafc;color:#0b1220;padding:10px 16px;border-radius:12px;font-weight:700;font-size:14px;display:none;max-width:90%;text-align:center}
 .prog{height:8px;background:var(--panel2);border-radius:5px;overflow:hidden;margin:8px 0}
 .prog i{display:block;height:100%;background:var(--accent)}
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center;margin-top:8px}
@@ -178,6 +201,7 @@ body.picking .sheet,body.picking #fabs{display:none!important}
 </style>
 </head>
 <body>
+<div id="app">
 <div id="map"></div>
 
 <div id="topbar"><div class="pill" id="topInfo">Newspaper Delivery</div></div>
@@ -191,7 +215,7 @@ body.picking .sheet,body.picking #fabs{display:none!important}
 
 <!-- Direction sheet -->
 <div class="sheet" id="dirSheet">
-  <div class="handle" id="dirHandle"><i></i></div>
+  <div class="handle" id="dirHandle"><i></i><span id="dirHint"></span></div>
   <div class="body" id="dirBody"></div>
 </div>
 
@@ -222,6 +246,7 @@ body.picking .sheet,body.picking #fabs{display:none!important}
   <button data-tab="settings"><span>⚙️</span>Settings</button>
 </nav>
 <div id="toast"></div>
+</div>
 <input type="file" id="importFile" accept="application/json,.json" style="display:none">
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
